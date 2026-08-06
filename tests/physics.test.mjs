@@ -1,0 +1,275 @@
+// 物理コアの検証テスト(node --test で実行)
+// 解析解との比較・保存則・モード遷移の頑健性を検証する
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { rhsCartesian, totalEnergy } from '../js/physics/crane-model.js';
+import { makeRK4 } from '../js/physics/integrator.js';
+import { CraneSimulator } from '../js/physics/simulator.js';
+import { GEOM, CRANE, PHYS } from '../js/physics/params.js';
+
+const g = PHYS.g;
+
+// 散逸・駆動なしの理想パラメータ(保存則検証用)
+function idealParams(over = {}) {
+  return {
+    mb: 7000, mt: 900, mp: 1080, g,
+    cx: 0, cy: 0, kpX: 0, kpY: 0, FmaxX: 0, FmaxY: 0,
+    pivotH: GEOM.pivotH,
+    kRope: 4.0e6, cRope: 0,
+    kn: 2.0e7, cn: 0, mu: 0,
+    bottomOff: -1e9,          // 接触無効
+    rhoAir: 0, CdA: 0, cLin: 0,
+    rig: 0,
+    ...over,
+  };
+}
+
+function freeze(u) { return { vcmdX: 0, vcmdY: 0, windX: 0, windY: 0, t0: 0, dL: 0, ...u }; }
+
+// 初期状態: 吊点直下からの角度 th で静止スタート
+function stateAtAngle(p, Leff, thx, thy = 0) {
+  const s = new Float64Array(10);
+  s[0] = 10; s[2] = 8;
+  s[4] = s[0] + Leff * Math.sin(thx) * Math.cos(thy);
+  s[5] = s[2] + Leff * Math.sin(thy);
+  s[6] = p.pivotH - Leff * Math.cos(thx) * Math.cos(thy);
+  return s;
+}
+
+test('静的釣り合い: 張力 T = mp·g、加速度ゼロ', () => {
+  const p = idealParams();
+  const Leff = 5;
+  const st = Leff + p.mp * g / p.kRope;   // 自重による伸びを含めた釣り合い長
+  const s = stateAtAngle(p, st, 0);
+  const out = new Float64Array(10);
+  const aux = {};
+  rhsCartesian(0, s, freeze({ L0: Leff }), p, out, aux);
+  assert.ok(Math.abs(aux.T - p.mp * g) / (p.mp * g) < 1e-12, `T=${aux.T} vs mg=${p.mp * g}`);
+  for (let i = 0; i < 10; i++) assert.ok(Math.abs(out[i]) < 1e-9, `deriv[${i}]=${out[i]}`);
+});
+
+test('たるみ状態では張力ゼロ', () => {
+  const p = idealParams();
+  const s = stateAtAngle(p, 3.0, 0.2);
+  const out = new Float64Array(10);
+  const aux = {};
+  rhsCartesian(0, s, freeze({ L0: 5.0 }), p, out, aux);   // 実距離 3 < 自然長 5
+  assert.equal(aux.T, 0);
+  assert.ok(Math.abs(out[7]) < 1e-12 && Math.abs(out[9] + g) < 1e-12, '自由落下になること');
+});
+
+test('エネルギー保存: 散逸なし大振幅スイング 20 秒で相対ドリフト < 1e-7', () => {
+  const p = idealParams();
+  const Leff = 6;
+  const s = stateAtAngle(p, Leff, 0.5, 0.3);
+  const u = freeze({ L0: Leff });
+  const rk4 = makeRK4(10);
+  const h = PHYS.dt;
+  const E0 = totalEnergy(s, Leff, p);
+  const rhs = (t, st, out) => rhsCartesian(t, st, u, p, out);
+  let maxDrift = 0;
+  for (let i = 0; i < Math.round(20 / h); i++) {
+    rk4(rhs, i * h, s, h);
+    const drift = Math.abs(totalEnergy(s, Leff, p) - E0) / Math.abs(E0);
+    if (drift > maxDrift) maxDrift = drift;
+  }
+  assert.ok(maxDrift < 1e-7, `エネルギードリフト ${maxDrift}`);
+});
+
+test('水平運動量保存: 駆動・摩擦なしで (mb+mt)dX + mp·vx と mt·dY + mp·vy が不変', () => {
+  const p = idealParams();
+  const Leff = 6;
+  const s = stateAtAngle(p, Leff, 0.4, -0.25);
+  s[1] = 0.3; s[3] = -0.2; // 初速を与える
+  const u = freeze({ L0: Leff });
+  const rk4 = makeRK4(10);
+  const h = PHYS.dt;
+  const Px0 = (p.mb + p.mt) * s[1] + p.mp * s[7];
+  const Py0 = p.mt * s[3] + p.mp * s[8];
+  const rhs = (t, st, out) => rhsCartesian(t, st, u, p, out);
+  for (let i = 0; i < Math.round(15 / h); i++) rk4(rhs, i * h, s, h);
+  const Px = (p.mb + p.mt) * s[1] + p.mp * s[7];
+  const Py = p.mt * s[3] + p.mp * s[8];
+  assert.ok(Math.abs(Px - Px0) < 1e-6, `Px ${Px0} → ${Px}`);
+  assert.ok(Math.abs(Py - Py0) < 1e-6, `Py ${Py0} → ${Py}`);
+});
+
+test('微小振幅の周期 ≈ 2π√(L/g) (0.3% 以内)', () => {
+  // ブリッジを事実上固定(超大質量)して純粋な振り子として測定
+  const p = idealParams({ mb: 1e12, mt: 1e12, kRope: 4e7 });
+  const Leff = 6;
+  const st = Leff + p.mp * g / p.kRope;
+  const s = stateAtAngle(p, st, 0.01);
+  const u = freeze({ L0: Leff });
+  const rk4 = makeRK4(10);
+  const h = PHYS.dt;
+  const rhs = (t, st_, out) => rhsCartesian(t, st_, u, p, out);
+  // x 方向変位のゼロクロスから周期を測定(2 回目の上昇ゼロクロスまで)
+  const x0 = s[0];
+  let prev = s[4] - x0, crossings = [];
+  for (let i = 0; i < Math.round(15 / h); i++) {
+    rk4(rhs, i * h, s, h);
+    const cur = s[4] - x0;
+    if (prev < 0 && cur >= 0) crossings.push((i + 1) * h);
+    prev = cur;
+  }
+  assert.ok(crossings.length >= 2, 'ゼロクロス不足');
+  const T = crossings[1] - crossings[0];
+  const Tth = 2 * Math.PI * Math.sqrt(st / g);
+  assert.ok(Math.abs(T - Tth) / Tth < 0.003, `T=${T} vs ${Tth}`);
+});
+
+test('球面振り子: 鉛直軸まわり角運動量の保存', () => {
+  const p = idealParams({ mb: 1e12, mt: 1e12 });
+  const Leff = 6;
+  const s = stateAtAngle(p, Leff, 0.4);
+  s[8] = 0.8;  // 接線方向初速 → 円錐振り子的運動
+  const u = freeze({ L0: Leff });
+  const rk4 = makeRK4(10);
+  const h = PHYS.dt;
+  const rhs = (t, st_, out) => rhsCartesian(t, st_, u, p, out);
+  const lz = () => {
+    const rx = s[4] - s[0], ry = s[5] - s[2];
+    return p.mp * (rx * s[8] - ry * s[7]);
+  };
+  const L0 = lz();
+  for (let i = 0; i < Math.round(15 / h); i++) rk4(rhs, i * h, s, h);
+  assert.ok(Math.abs(lz() - L0) / Math.abs(L0) < 1e-8, `Lz ${L0} → ${lz()}`);
+});
+
+test('巻上の仕事収支: dE = ∫T·(−dL̇)dt (0.5% 以内)', () => {
+  const p = idealParams();
+  const Leff0 = 7;
+  const s = stateAtAngle(p, Leff0, 0.25);
+  const rk4 = makeRK4(10);
+  const h = PHYS.dt;
+  const dL = -0.1;   // 巻上(自然長を縮める)
+  const out = new Float64Array(10);
+  const aux = {};
+  let W = 0;
+  let t = 0;
+  const dur = 10;
+  for (let i = 0; i < Math.round(dur / h); i++) {
+    const u = freeze({ L0: Leff0 + dL * t, dL, t0: t });
+    // 台形則で仕事 W = ∫ T·(−dL) dt を数値積分
+    rhsCartesian(t, s, u, p, out, aux);
+    const T1 = aux.T;
+    rk4((tt, st_, o) => rhsCartesian(tt, st_, u, p, o), t, s, h);
+    t += h;
+    rhsCartesian(t, s, freeze({ L0: Leff0 + dL * t, dL, t0: t }), p, out, aux);
+    W += 0.5 * (T1 + aux.T) * (-dL) * h;
+  }
+  const E0 = totalEnergy(stateAtAngle(p, Leff0, 0.25), Leff0, p);
+  const E1 = totalEnergy(s, Leff0 + dL * dur, p);
+  const err = Math.abs((E1 - E0) - W) / Math.abs(W);
+  assert.ok(err < 0.005, `dE=${E1 - E0} W=${W} 相対誤差=${err}`);
+});
+
+test('たるみ→張り遷移: 落下からの再張架で発散しない', () => {
+  const p = idealParams({ cRope: 2 * 0.15 * Math.sqrt(4e6 * 1080) });
+  const Leff = 5;
+  const s = stateAtAngle(p, 2.0, 0);   // 自然長より 3 m 上(たるみ)から自由落下
+  const u = freeze({ L0: Leff });
+  const rk4 = makeRK4(10);
+  const h = PHYS.dt;
+  const rhs = (t, st_, out) => rhsCartesian(t, st_, u, p, out);
+  let maxT = 0;
+  const aux = {};
+  const out = new Float64Array(10);
+  for (let i = 0; i < Math.round(8 / h); i++) {
+    rk4(rhs, i * h, s, h);
+    rhsCartesian(i * h, s, u, p, out, aux);
+    maxT = Math.max(maxT, aux.T);
+    for (let k = 0; k < 10; k++) assert.ok(Number.isFinite(s[k]), 'NaN/Inf 発生');
+  }
+  // 減衰後はほぼ静止・張力は自重近傍に収束していること
+  const speed = Math.hypot(s[7], s[8], s[9]);
+  assert.ok(speed < 0.5, `残留速度 ${speed}`);
+  assert.ok(maxT > p.mp * g, '衝撃張力が自重を上回ること(スナップ荷重)');
+  assert.ok(aux.T > 0.5 * p.mp * g && aux.T < 2 * p.mp * g, `最終張力 ${aux.T}`);
+});
+
+test('シミュレータ統合: 玉掛け→巻上→地切り→着床→玉外し', () => {
+  const sim = new CraneSimulator({ loadMass: 1000 });
+  sim.placeLoad(8, 8);   // ブリッジ・トロリの初期位置直下
+  // フックを玉掛け高さまで巻下げ
+  sim.setCommand({ travel: 0, traverse: 0, hoist: -1, step: 2 });
+  let guard = 0;
+  while (sim.s[6] - GEOM.hookHalf > GEOM.load.sz + GEOM.slingLen - 0.2 && guard++ < 12000) sim.step(1 / 60);
+  sim.setCommand({ travel: 0, traverse: 0, hoist: 0, step: 1 });
+  for (let i = 0; i < 60; i++) sim.step(1 / 60);
+  const r1 = sim.tryToggleHook();
+  assert.ok(r1.ok, `玉掛け失敗: ${r1.msg}`);
+
+  // 巻上げ → 地切り
+  sim.setCommand({ travel: 0, traverse: 0, hoist: 1, step: 1 });
+  guard = 0;
+  while (sim.getRenderState().loadOnGround && guard++ < 30000) sim.step(1 / 60);
+  assert.ok(guard < 30000, '地切りできない');
+  const rs = sim.getRenderState();
+  assert.ok(rs.T > 900 * PHYS.g * 0.9, `吊上げ時張力 ${rs.T}`);
+
+  // 少し吊り上げてから着床
+  for (let i = 0; i < 120; i++) sim.step(1 / 60);
+  sim.setCommand({ travel: 0, traverse: 0, hoist: -1, step: 1 });
+  guard = 0;
+  while (!sim.getRenderState().loadOnGround && guard++ < 30000) sim.step(1 / 60);
+  assert.ok(guard < 30000, '着床できない');
+  sim.setCommand({ travel: 0, traverse: 0, hoist: -1, step: 1 });
+  for (let i = 0; i < 90; i++) sim.step(1 / 60);   // ロープを緩める
+  sim.setCommand({ travel: 0, traverse: 0, hoist: 0, step: 1 });
+  for (let i = 0; i < 60; i++) sim.step(1 / 60);
+  const r2 = sim.tryToggleHook();
+  assert.ok(r2.ok, `玉外し失敗: ${r2.msg}`);
+  assert.ok(!sim.getRenderState().loadAttached);
+});
+
+test('シミュレータ統合: 走行指令で定格速度に到達し停止後に振れが残る', () => {
+  const sim = new CraneSimulator({ loadMass: 1000 });
+  sim.placeLoad(8, 8);
+  // 玉掛け状態を直接構成(吊荷を吊点直下に吊持)
+  sim.attached = true;
+  sim._syncParams();
+  sim.L = 4;
+  sim.s[4] = sim.s[0]; sim.s[5] = sim.s[2];
+  sim.s[6] = GEOM.pivotH - (sim.L + sim.p.rig) - sim.p.mp * PHYS.g / sim.p.kRope;
+  sim.s[7] = sim.s[8] = sim.s[9] = 0;
+
+  sim.setCommand({ travel: 1, traverse: 0, hoist: 0, step: 2 });
+  for (let i = 0; i < 60 * 8; i++) sim.step(1 / 60);
+  const v = sim.getRenderState().speeds.travel;
+  assert.ok(Math.abs(v - CRANE.travelSpeed[1]) < 0.03, `走行速度 ${v} vs ${CRANE.travelSpeed[1]}`);
+
+  sim.setCommand({ travel: 0, traverse: 0, hoist: 0, step: 1 });
+  for (let i = 0; i < 60 * 6; i++) sim.step(1 / 60);
+  const rs = sim.getRenderState();
+  assert.ok(Math.abs(rs.speeds.travel) < 0.02, 'ブリッジが停止すること');
+  assert.ok(rs.sway.amp > 0.05, `急停止後に荷振れが残ること (amp=${rs.sway.amp})`);
+  for (let i = 0; i < 10; i++) { sim.step(1 / 60); assert.ok(Number.isFinite(sim.energy())); }
+});
+
+test('ファズ: ランダム操作 120 秒で NaN・発散なし', () => {
+  const sim = new CraneSimulator({ loadMass: 2000 });
+  sim.setWind(4);
+  let seed = 12345;
+  const rand = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  for (let f = 0; f < 60 * 120; f++) {
+    if (f % 45 === 0) {
+      sim.setCommand({
+        travel: Math.floor(rand() * 3) - 1,
+        traverse: Math.floor(rand() * 3) - 1,
+        hoist: Math.floor(rand() * 3) - 1,
+        step: rand() > 0.5 ? 2 : 1,
+      });
+    }
+    if (f === 1800) sim.estop();
+    if (f % 600 === 0 && !sim.attached) sim.tryToggleHook();
+    sim.step(1 / 60);
+    if (f % 60 === 0) {
+      const rs = sim.getRenderState();
+      assert.ok(Number.isFinite(rs.T) && Number.isFinite(rs.hookPos.z), `frame ${f} で非有限値`);
+      assert.ok(rs.hookPos.z > -1 && rs.hookPos.z < GEOM.pivotH + 1, `フック高さ異常 ${rs.hookPos.z}`);
+      assert.ok(rs.sway.amp < 8, `振れ発散 ${rs.sway.amp}`);
+    }
+  }
+});
