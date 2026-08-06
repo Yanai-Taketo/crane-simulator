@@ -44,7 +44,9 @@ setActive(camBtns, 'btn-cam-orbit');
 
 const modeBtns = ['btn-mode-free', 'btn-mode-task'];
 $('btn-mode-free').addEventListener('click', () => { task.cancel(); setActive(modeBtns, 'btn-mode-free'); toast('自由練習モード'); });
-$('btn-mode-task').addEventListener('click', () => { task.start(sim); setActive(modeBtns, 'btn-mode-task'); });
+$('btn-mode-task').addEventListener('click', () => {
+  if (task.start(sim)) setActive(modeBtns, 'btn-mode-task');
+});
 setActive(modeBtns, 'btn-mode-free');
 
 $('btn-reset').addEventListener('click', () => {

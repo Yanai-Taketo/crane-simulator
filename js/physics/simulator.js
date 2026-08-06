@@ -26,6 +26,7 @@ export class CraneSimulator {
     this.L = 4.0;                 // ウインチ繰出し長(吊点→フック中心)
     this.dL = 0;
     this.attached = false;
+    this.attachedLoadMass = this.loadMass;
     this.estopActive = false;
     this.windMean = 0;
     this.gust = { x: 0, y: 0 };
@@ -41,8 +42,9 @@ export class CraneSimulator {
   }
 
   // 現在の吊り体(フックのみ / フック+吊荷)に応じた物理パラメータ
+  // 吊荷質量は玉掛け時点の値で固定(吊持中のスライダー変更は次回玉掛けから)
   _syncParams() {
-    const mp = this.attached ? CRANE.mHook + this.loadMass : CRANE.mHook;
+    const mp = this.attached ? CRANE.mHook + this.attachedLoadMass : CRANE.mHook;
     const rig = this.attached ? GEOM.hookHalf + GEOM.slingLen + GEOM.load.sz / 2 : 0;
     const h = PHYS.dt;
     const wCap = 0.45 / h;                     // 数値安定のための最大角周波数
@@ -81,10 +83,7 @@ export class CraneSimulator {
   }
 
   setCommand(cmd) { this.cmd = cmd; }
-  setLoadMass(kg) {
-    this.loadMass = kg;
-    if (this.attached) this._syncParams();
-  }
+  setLoadMass(kg) { this.loadMass = kg; }
   setWind(v) { this.windMean = v; }
 
   estop() {
@@ -130,6 +129,7 @@ export class CraneSimulator {
     s[4] = lt.x; s[5] = lt.y;
     s[7] = 0; s[8] = 0; s[9] = 0;
     this.attached = true;
+    this.attachedLoadMass = this.loadMass;
     this._syncParams();
     // ペナルティ接触の静的平衡貫入量だけ沈めて N = mp·g で釣り合わせる
     s[6] = GEOM.load.sz / 2 - (this.p.mp * PHYS.g) / this.p.kn;
@@ -260,7 +260,7 @@ export class CraneSimulator {
       loadYaw: this.attached ? 0 : this.loadStatic.yaw,
       slack,
       T: this.aux.T,
-      loadMass: this.loadMass,
+      loadMass: this.attached ? this.attachedLoadMass : this.loadMass,
       sway: { angle: swayAngle, amp: horiz },
       speeds: { travel: s[1], traverse: s[3], hoist: -this.dL },
       warnings,

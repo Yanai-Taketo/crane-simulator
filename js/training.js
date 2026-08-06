@@ -29,6 +29,10 @@ export class TrainingTask {
   }
 
   start(sim) {
+    if (sim.attached) {
+      this.toast('玉外しして荷を置いてから課題を開始してください');
+      return false;
+    }
     this._reset();
     this.target = TARGETS[Math.floor(Math.random() * TARGETS.length)];
     sim.placeLoad(START_POS.x, START_POS.y);
@@ -40,6 +44,7 @@ export class TrainingTask {
     this.elText.innerHTML =
       `黄ゾーンの荷に玉掛けし(<b>E</b>)、<b>緑ゾーン</b>へ運搬して静かに据え付け、玉掛けを外してください。地切りで計時開始。`;
     this.toast('課題開始: 荷を緑ゾーンへ運搬してください');
+    return true;
   }
 
   cancel() {
