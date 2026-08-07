@@ -68,6 +68,7 @@ export class SceneManager {
     this._buildFactory();
     this._buildCrane();
     this._buildCab();
+    this._buildWalkerFig();
     this._buildLoad();
     this._buildTrail();
     this._buildZones();
@@ -408,13 +409,14 @@ export class SceneManager {
   // 運転席視点のマウスルック
   _bindCabLook(canvas) {
     let dragging = false, px = 0, py = 0;
+    const lookMode = () => this.cameraMode === 'cab' || this.cameraMode === 'walk';
     canvas.addEventListener('pointerdown', (e) => {
-      if (this.cameraMode !== 'cab') return;
+      if (!lookMode()) return;
       dragging = true; px = e.clientX; py = e.clientY;
       canvas.setPointerCapture(e.pointerId);
     });
     canvas.addEventListener('pointermove', (e) => {
-      if (!dragging || this.cameraMode !== 'cab') return;
+      if (!dragging || !lookMode()) return;
       this.cabYaw = Math.max(-2.4, Math.min(2.4, this.cabYaw - (e.clientX - px) * 0.004));
       this.cabPitch = Math.max(-1.35, Math.min(0.45, this.cabPitch - (e.clientY - py) * 0.004));
       px = e.clientX; py = e.clientY;
@@ -422,6 +424,39 @@ export class SceneManager {
     const end = () => { dragging = false; };
     canvas.addEventListener('pointerup', end);
     canvas.addEventListener('pointercancel', end);
+  }
+
+  // 床上歩行オペレータの人形とペンダントケーブル
+  _buildWalkerFig() {
+    const g = new THREE.Group();
+    const body = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.16, 0.2, 1.15, 10),
+      new THREE.MeshStandardMaterial({ color: 0x2e5f8a, roughness: 0.8 })
+    );
+    body.position.y = 0.78;
+    const head = new THREE.Mesh(
+      new THREE.SphereGeometry(0.13, 12, 10),
+      new THREE.MeshStandardMaterial({ color: 0xc8a080, roughness: 0.8 })
+    );
+    head.position.y = 1.5;
+    const helmet = new THREE.Mesh(
+      new THREE.SphereGeometry(0.145, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.55),
+      new THREE.MeshStandardMaterial({ color: 0xf5d020, roughness: 0.5 })
+    );
+    helmet.position.y = 1.53;
+    g.add(body, head, helmet);
+    g.traverse(o => { if (o.isMesh) o.castShadow = true; });
+    g.visible = false;
+    this.scene.add(g);
+    this.walkerFig = g;
+    // ペンダントケーブル(トロリ→手元)
+    this.pendantGeo = new THREE.BufferGeometry();
+    this.pendantPos = new Float32Array(2 * 3);
+    this.pendantGeo.setAttribute('position', new THREE.BufferAttribute(this.pendantPos, 3));
+    this.pendantLine = new THREE.Line(this.pendantGeo, new THREE.LineBasicMaterial({ color: 0x222629 }));
+    this.pendantLine.frustumCulled = false;
+    this.pendantLine.visible = false;
+    this.scene.add(this.pendantLine);
   }
 
   _buildLoad() {
@@ -643,6 +678,19 @@ export class SceneManager {
       this.trailGeo.attributes.position.needsUpdate = true;
     }
 
+    // 歩行オペレータ(人形は一人称時は非表示)とペンダントケーブル
+    if (this.walker) {
+      const show = this.walkerActive === true;
+      this.walkerFig.visible = show && this.cameraMode !== 'walk';
+      this.pendantLine.visible = show;
+      if (show) {
+        this.walkerFig.position.set(this.walker.x, 0, this.walker.y);
+        this.pendantPos[0] = rs.X; this.pendantPos[1] = GEOM.railH + 0.9; this.pendantPos[2] = rs.Y;
+        this.pendantPos[3] = this.walker.x; this.pendantPos[4] = 1.15; this.pendantPos[5] = this.walker.y;
+        this.pendantGeo.attributes.position.needsUpdate = true;
+      }
+    }
+
     // キャブ内レバーの表示(前方押し = ノッチ負 → 前傾)
     if (rs.notches && this.cabLevers) {
       const tilt = 9 * Math.PI / 180;   // 1 ノッチあたり約 9°
@@ -660,6 +708,13 @@ export class SceneManager {
       this.camera.rotation.set(0, 0, 0);
       this.camera.rotation.order = 'YXZ';
       this.camera.rotation.y = this.cabYaw;    // 既定 0 = 北向き(three −z = 物理 −y)
+      this.camera.rotation.x = this.cabPitch;
+    } else if (this.cameraMode === 'walk' && this.walker) {
+      // 床上歩行視点: オペレータの目線・マウスルック
+      this.camera.position.set(this.walker.x, this.walker.eyeH, this.walker.y);
+      this.camera.rotation.set(0, 0, 0);
+      this.camera.rotation.order = 'YXZ';
+      this.camera.rotation.y = this.cabYaw;
       this.camera.rotation.x = this.cabPitch;
     } else if (this.cameraMode === 'operator') {
       // 床上運転者: ブリッジの少し南側を歩いて追従

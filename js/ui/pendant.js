@@ -18,6 +18,23 @@ export class PendantInput {
     this._bindKeys();
   }
 
+  // 歩行視点: WASD を歩行に譲り、巻上下は R/F へ再割当
+  setWalkMode(on) {
+    this._keyMap = on
+      ? {
+          ArrowLeft: ['travel', -1], ArrowRight: ['travel', 1],
+          ArrowUp: ['traverse', -1], ArrowDown: ['traverse', 1],
+          KeyR: ['hoist', 1], KeyF: ['hoist', -1],
+        }
+      : {
+          ArrowLeft: ['travel', -1], ArrowRight: ['travel', 1],
+          ArrowUp: ['traverse', -1], ArrowDown: ['traverse', 1],
+          KeyW: ['hoist', 1], KeyS: ['hoist', -1],
+        };
+    for (const k of Object.keys(this._keys)) this._keys[k] = 0;
+    this._refresh();
+  }
+
   _bindButtons() {
     for (const btn of document.querySelectorAll('.pbtn[data-axis]')) {
       const axis = btn.dataset.axis;

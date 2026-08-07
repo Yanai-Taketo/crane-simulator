@@ -8,6 +8,7 @@ import { Hud } from './ui/hud.js';
 import { CraneAudio } from './ui/audio.js';
 import { SwayScope } from './ui/swayscope.js';
 import { TrainingTask, START_POS } from './training.js';
+import { Walker } from './ui/walker.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -76,6 +77,7 @@ function setControlMode(m) {
   if (m === 'cab') {
     leverPanel.zeroAll();               // 搭乗時は全ノッチ中立から(零位確認)
     sim.setLevers(leverPanel.notches);
+    setWalkActive(false);
     scene.setCameraMode('cab');
     setActive(camBtns, 'btn-cam-cab');
     toast('運転室モード: レバーをドラッグ、または矢印/W/S キー。画面ドラッグで見回し');
@@ -93,11 +95,47 @@ function setControlMode(m) {
 function setActive(groupIds, activeId) {
   for (const id of groupIds) $(id).classList.toggle('active', id === activeId);
 }
-const camBtns = ['btn-cam-orbit', 'btn-cam-cab', 'btn-cam-operator', 'btn-cam-follow'];
-$('btn-cam-orbit').addEventListener('click', () => { scene.setCameraMode('orbit'); setActive(camBtns, 'btn-cam-orbit'); });
-$('btn-cam-cab').addEventListener('click', () => { scene.setCameraMode('cab'); setActive(camBtns, 'btn-cam-cab'); });
-$('btn-cam-operator').addEventListener('click', () => { scene.setCameraMode('operator'); setActive(camBtns, 'btn-cam-operator'); });
-$('btn-cam-follow').addEventListener('click', () => { scene.setCameraMode('follow'); setActive(camBtns, 'btn-cam-follow'); });
+// 歩行オペレータ(床上操作の実制約: ペンダントケーブルで追従)
+const walker = new Walker(8, 6);
+scene.walker = walker;
+let walkActive = false;
+const walkKeys = { fwd: 0, strafe: 0 };
+window.addEventListener('keydown', (e) => {
+  if (!walkActive || e.repeat) return;
+  const t = e.target;
+  if (t instanceof HTMLElement && (t.tagName === 'INPUT' || t.tagName === 'SELECT')) return;
+  if (e.code === 'KeyW') walkKeys.fwd = 1;
+  if (e.code === 'KeyS') walkKeys.fwd = -1;
+  if (e.code === 'KeyA') walkKeys.strafe = -1;
+  if (e.code === 'KeyD') walkKeys.strafe = 1;
+});
+window.addEventListener('keyup', (e) => {
+  if (e.code === 'KeyW' && walkKeys.fwd === 1) walkKeys.fwd = 0;
+  if (e.code === 'KeyS' && walkKeys.fwd === -1) walkKeys.fwd = 0;
+  if (e.code === 'KeyA' && walkKeys.strafe === -1) walkKeys.strafe = 0;
+  if (e.code === 'KeyD' && walkKeys.strafe === 1) walkKeys.strafe = 0;
+});
+function setWalkActive(on) {
+  walkActive = on;
+  scene.walkerActive = on;
+  pendant.setWalkMode(on && ctrlMode === 'pendant');
+  if (on) {
+    walker.x = sim.s[0] - 1.0; walker.y = Math.min(14.5, sim.s[2] + 1.2);
+    toast('歩行モード: WASD 歩行 / 矢印 走行・横行 / R・F 巻上下 / ドラッグで見回し');
+  }
+}
+
+const camBtns = ['btn-cam-orbit', 'btn-cam-cab', 'btn-cam-walk', 'btn-cam-operator', 'btn-cam-follow'];
+const camSelect = (mode, id) => {
+  scene.setCameraMode(mode);
+  setActive(camBtns, id);
+  setWalkActive(mode === 'walk');
+};
+$('btn-cam-orbit').addEventListener('click', () => camSelect('orbit', 'btn-cam-orbit'));
+$('btn-cam-cab').addEventListener('click', () => camSelect('cab', 'btn-cam-cab'));
+$('btn-cam-walk').addEventListener('click', () => camSelect('walk', 'btn-cam-walk'));
+$('btn-cam-operator').addEventListener('click', () => camSelect('operator', 'btn-cam-operator'));
+$('btn-cam-follow').addEventListener('click', () => camSelect('follow', 'btn-cam-follow'));
 setActive(camBtns, 'btn-cam-orbit');
 
 $('btn-ctrl-pendant').addEventListener('click', () => setControlMode('pendant'));
@@ -174,6 +212,7 @@ function frame(now) {
   sim.step(slowmo ? dt * 0.25 : dt);
 
   const rs = sim.getRenderState();
+  if (walkActive) walker.update(dt, walkKeys, scene.cabYaw, rs.X, rs.Y);
   scene.update(rs, dt);
   audio.update(rs, dt);
   // 課題の計時はシミュレーション時刻に同期(描画レートの影響を受けない)
