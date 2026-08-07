@@ -45,6 +45,18 @@ test('衝突: 壁ギャップの斜行通過(ギャップ内は接触なし・�
   assert.deepEqual(checkContacts(LOAD(20, 4.0, 3.5), null, obs), ['F1']);
 });
 
+test('減点: ヒステリシス付きエッジは中間帯で再計上しない', () => {
+  const d = new DeductionSheet(40);
+  // 発火 0.35 超 / 解除 0.2 未満(荷振れ・高さ逸脱の実装と同じ形)
+  const step = (amp) => d.edge('sway', 'sway', '荷振れ大', 10, 0, amp > 0.35, amp < 0.2);
+  assert.ok(step(0.4));      // 計上
+  assert.ok(!step(0.3));     // 中間帯: 解除されない
+  assert.ok(!step(0.4));     // 継続中は再計上しない
+  step(0.1);                 // 0.2 未満で解除
+  assert.ok(step(0.4));      // 収まってからの再発のみ再計上
+  assert.equal(d.total(), 20);
+});
+
 test('減点: エッジ計上・合計・40 点以下合格', () => {
   const d = new DeductionSheet(40);
   // 接触継続は 1 回だけ計上

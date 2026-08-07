@@ -417,7 +417,11 @@ export class SceneManager {
     });
     canvas.addEventListener('pointermove', (e) => {
       if (!dragging || !lookMode()) return;
-      this.cabYaw = Math.max(-2.4, Math.min(2.4, this.cabYaw - (e.clientX - px) * 0.004));
+      const dy = this.cabYaw - (e.clientX - px) * 0.004;
+      // 歩行時は全周旋回(±π ラップ)、着座時は運転席の首振り範囲に制限
+      this.cabYaw = this.cameraMode === 'walk'
+        ? ((dy + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI
+        : Math.max(-2.4, Math.min(2.4, dy));
       this.cabPitch = Math.max(-1.35, Math.min(0.45, this.cabPitch - (e.clientY - py) * 0.004));
       px = e.clientX; py = e.clientY;
     });
@@ -611,15 +615,19 @@ export class SceneManager {
     m.rotation.y = 0.22;   // わずかに斜めに転がった見た目
   }
 
-  setZone(which, x, y, visible = true) {
+  // r: 実際の判定半径(採点円と表示円を一致させる)。省略時は既定 1.3 m
+  setZone(which, x, y, visible = true, r = 1.3) {
     const z = which === 'start' ? this.startZone : this.targetZone;
     z.position.set(x, 0, y);
+    z.scale.setScalar(r / 1.3);   // リングは半径 1.3 で生成済み → 一様スケール
     z.visible = visible;
   }
 
   setCameraMode(mode) {
     this.cameraMode = mode;
     this.controls.enabled = (mode === 'orbit');
+    // 歩行で全周ラップした向きを、着座時の首振り範囲へ戻す
+    if (mode === 'cab') this.cabYaw = Math.max(-2.4, Math.min(2.4, this.cabYaw));
   }
 
   setTrailVisible(v) {

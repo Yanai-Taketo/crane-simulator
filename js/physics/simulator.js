@@ -61,6 +61,7 @@ export class CraneSimulator {
     this.hoistBrake = { state: 'set', t: 0 };  // set|releasing|released|setting
     this.vh = 0;                                // 巻上速度(上+)[m/s](exam 動的ウインチ)
     this.overload = false;
+    this.loadShape = null;                     // null = 直方体 / {r,h} = 円柱(ドラム缶)
     this.loadStatic = { x: 6, y: 4, yaw: 0 };  // 置かれている吊荷(幾何中心)
     const s = this.s;
     s.fill(0);
@@ -109,9 +110,15 @@ export class CraneSimulator {
       loadBottomOff: GEOM.load.sz / 2,
       hookBottomOff: GEOM.hookHalf,
       // フックの支持面: 玉掛け中は吊り荷の上面(実体)、単独時は置き荷の上面
-      hookBlock: this.attached
-        ? { x: this.s[10], y: this.s[11], halfX: GEOM.load.sx / 2, halfY: GEOM.load.sy / 2, top: this.s[12] + GEOM.load.sz / 2 }
-        : { x: this.loadStatic.x, y: this.loadStatic.y, halfX: GEOM.load.sx / 2, halfY: GEOM.load.sy / 2, top: GEOM.load.sz },
+      hookBlock: (() => {
+        // フックが載れる荷上面。円柱荷(ドラム)は据わりの利く中央部のみ
+        const hx = this.loadShape ? this.loadShape.r * 0.75 : GEOM.load.sx / 2;
+        const hy = this.loadShape ? this.loadShape.r * 0.75 : GEOM.load.sy / 2;
+        const hh = this.loadShape ? this.loadShape.h : GEOM.load.sz;
+        return this.attached
+          ? { x: this.s[10], y: this.s[11], halfX: hx, halfY: hy, top: this.s[12] + hh / 2 }
+          : { x: this.loadStatic.x, y: this.loadStatic.y, halfX: hx, halfY: hy, top: hh };
+      })(),
       rhoAir: PHYS.rhoAir,
       CdALoad: PHYS.dragCdA, CdAHook: 0.15,
       cLin: 0.6, cLinHook: 0.2,
@@ -220,6 +227,8 @@ export class CraneSimulator {
   }
 
   setLoadMass(kg) { this.loadMass = kg; }
+  // 吊荷の形状(null = 直方体 / {r,h} = 鉛直円柱)。フック支持面の footprint に反映
+  setLoadShape(shape) { this.loadShape = shape; this._syncParams(); }
   setCgOffset(x, y) { this.cgOff = { x: clamp(x, -0.35, 0.35), y: clamp(y, -0.35, 0.35) }; }
   setWind(v) { this.windMean = v; }
 
@@ -509,6 +518,10 @@ export class CraneSimulator {
       speeds: { travel: s[1], traverse: s[3], hoist: -this.dL, loadVz: this.attached ? s[15] : s[9] },
       controlMode: this.controlMode,
       notches: { travel: this.notches.travel, traverse: this.notches.traverse, hoist: this.notches.hoist },
+      // 同時投入中の軸数(運転室モードは 3 動作をインターロックで遮断済み)
+      activeAxes: this.controlMode === 'lever'
+        ? (this.notches.travel !== 0) + (this.notches.traverse !== 0) + (this.notches.hoist !== 0)
+        : (this.cmd.travel !== 0) + (this.cmd.traverse !== 0) + (this.cmd.hoist !== 0),
       warnings,
     };
   }

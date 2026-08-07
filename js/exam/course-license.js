@@ -36,14 +36,16 @@ export const LICENSE_COURSE = {
     { id: 'Fp', type: 'pole', x: 21.0, y: 4.65, r: 0.15, zLo: 0, zHi: 4.0 },
   ],
   // 経由点(順序どおり通過。未経由でゴール = 失格)
+  // zMax: この荷底高さ未満で通過してこそ経由(門・ギャップの上空通過は不経由)。
+  // バー越え区間 B/E のみ吊り越え高さを許容
   waypoints: [
     { id: 'A', x: 20.5, y: 3.0, r: 1.0, label: 'A 門' },
     { id: 'WS', x: 10.0, y: 2.0, r: 1.6, label: '南折返し' },
-    { id: 'B', x: 7.5, y: 3.5, r: 1.3, label: 'B バー越え' },
+    { id: 'B', x: 7.5, y: 3.5, r: 1.3, zMax: 4.2, label: 'B バー越え' },
     { id: 'C', x: 4.0, y: 5.5, r: 1.6, label: 'C 方向転換' },
     { id: 'D', x: 8.5, y: 8.0, r: 1.0, label: 'D 門' },
     { id: 'N', x: 11.5, y: 9.5, r: 1.8, label: '北頂点' },
-    { id: 'E', x: 13.5, y: 5.0, r: 1.3, label: 'E バー越え' },
+    { id: 'E', x: 13.5, y: 5.0, r: 1.3, zMax: 4.2, label: 'E バー越え' },
     { id: 'F', x: 21.0, y: 5.55, r: 1.1, label: 'F 壁ギャップ(斜行)' },
   ],
   // バー越え区間(この水平距離内では 2 m 超の巻上を許容)
@@ -55,6 +57,6 @@ export const LICENSE_COURSE = {
   points: {
     contactPole: 5, contactBar: 5, contactWall: 20,
     sway: 10, height: 5, noStopGround: 5, noStopSetdown: 5,
-    outOfZone: 5, timeOver: 45,
+    outOfZone: 5, timeOver: 45, threeOp: 5,
   },
 };

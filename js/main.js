@@ -97,6 +97,7 @@ function setControlMode(m) {
     leverPanel.zeroAll();               // 降車時は全レバー中立(インターロック維持)
     sim.setLevers(leverPanel.notches);
     sim.setCommand(pendant.getCommand());
+    setWalkActive(false);
     scene.setCameraMode('orbit');
     setActive(camBtns, 'btn-cam-orbit');
     toast('床上操作(ペンダント)モード');
@@ -127,6 +128,11 @@ window.addEventListener('keyup', (e) => {
   if (e.code === 'KeyA' && walkKeys.strafe === -1) walkKeys.strafe = 0;
   if (e.code === 'KeyD' && walkKeys.strafe === 1) walkKeys.strafe = 0;
 });
+// タブ切替などで keyup を取り逃しても歩行・ホーンが残らないように
+window.addEventListener('blur', () => {
+  walkKeys.fwd = 0; walkKeys.strafe = 0;
+  audio.horn(false);
+});
 function setWalkActive(on) {
   walkActive = on;
   scene.walkerActive = on;
@@ -145,7 +151,11 @@ const camSelect = (mode, id) => {
 };
 $('btn-cam-orbit').addEventListener('click', () => camSelect('orbit', 'btn-cam-orbit'));
 $('btn-cam-cab').addEventListener('click', () => camSelect('cab', 'btn-cam-cab'));
-$('btn-cam-walk').addEventListener('click', () => camSelect('walk', 'btn-cam-walk'));
+$('btn-cam-walk').addEventListener('click', () => {
+  // 歩行 = 床上操作。運転室モードのままでは W/S がレバーと衝突するため降車する
+  if (ctrlMode === 'cab') setControlMode('pendant');
+  camSelect('walk', 'btn-cam-walk');
+});
 $('btn-cam-operator').addEventListener('click', () => camSelect('operator', 'btn-cam-operator'));
 $('btn-cam-follow').addEventListener('click', () => camSelect('follow', 'btn-cam-follow'));
 setActive(camBtns, 'btn-cam-orbit');
@@ -155,12 +165,21 @@ $('btn-ctrl-cab').addEventListener('click', () => setControlMode('cab'));
 setActive(ctrlBtns, 'btn-ctrl-pendant');
 
 const modeBtns = ['btn-mode-free', 'btn-mode-task', 'btn-mode-exam', 'btn-mode-floor'];
+// 開始条件(玉外し済み)を満たさないうちは現行モードを壊さない
+const requireUnhooked = () => {
+  if (!sim.attached) return true;
+  toast('玉外しして荷を置いてから開始してください');
+  return false;
+};
 $('btn-mode-free').addEventListener('click', () => { task.cancel(); exam.cancel(); floorExam.cancel(); setActive(modeBtns, 'btn-mode-free'); toast('自由練習モード'); });
 $('btn-mode-task').addEventListener('click', () => {
+  if (!requireUnhooked()) return;
   exam.cancel(); floorExam.cancel();
   if (task.start(sim)) setActive(modeBtns, 'btn-mode-task');
+  else setActive(modeBtns, 'btn-mode-free');
 });
 $('btn-mode-exam').addEventListener('click', () => {
+  if (!requireUnhooked()) return;
   task.cancel(); floorExam.cancel();
   if (exam.start(sim)) {
     setActive(modeBtns, 'btn-mode-exam');
@@ -170,9 +189,10 @@ $('btn-mode-exam').addEventListener('click', () => {
     $('set-mass').value = 1000; $('set-mass-val').textContent = '1000';
     $('set-cg').value = 0; $('set-cg-val').textContent = '0.00';
     toast('運転士実技試験: 試験場仕様機(二次抵抗制御)に切替えました');
-  }
+  } else setActive(modeBtns, 'btn-mode-free');
 });
 $('btn-mode-floor').addEventListener('click', () => {
+  if (!requireUnhooked()) return;
   task.cancel(); exam.cancel();
   if (floorExam.start(sim)) {
     setActive(modeBtns, 'btn-mode-floor');
@@ -184,7 +204,7 @@ $('btn-mode-floor').addEventListener('click', () => {
     setControlMode('pendant');
     camSelect('walk', 'btn-cam-walk');
     toast('技能講習: 歩行モードで荷に付いて歩き、V で指差呼称');
-  }
+  } else setActive(modeBtns, 'btn-mode-free');
 });
 setActive(modeBtns, 'btn-mode-free');
 
@@ -196,6 +216,8 @@ $('btn-reset').addEventListener('click', () => {
     sim.setLevers(leverPanel.notches);
   }
   sim.placeLoad(START_POS.x, START_POS.y);
+  scene.setZone('start', START_POS.x, START_POS.y, true);   // 試験用の位置・縮尺から復帰
+  scene.setZone('target', 0, 0, false);
   scope.reset();
   scene.clearTrail();
   scene.setTrailVisible($('set-trails').checked);
@@ -209,7 +231,21 @@ $('btn-reset').addEventListener('click', () => {
 $('btn-settings').addEventListener('click', () => $('settings-panel').classList.toggle('hidden'));
 
 // ---- 設定 ----
+// 試験中は条件(荷質量・機体・重心)を固定 — 途中で変えると採点が無意味になる
+const examActive = () =>
+  (exam.state !== 'idle' && exam.state !== 'done') ||
+  (floorExam.state !== 'idle' && floorExam.state !== 'done');
+const guardExamSetting = (revert) => {
+  if (!examActive()) return false;
+  revert();
+  toast('試験中は変更できません(リセットまたは自由練習で解除)');
+  return true;
+};
 $('set-mass').addEventListener('input', (e) => {
+  if (guardExamSetting(() => {
+    e.target.value = sim.loadMass;
+    $('set-mass-val').textContent = sim.loadMass;
+  })) return;
   const kg = Number(e.target.value);
   $('set-mass-val').textContent = kg;
   sim.setLoadMass(kg);
@@ -221,12 +257,17 @@ $('set-wind').addEventListener('input', (e) => {
 });
 $('set-trails').addEventListener('change', (e) => scene.setTrailVisible(e.target.checked));
 $('set-profile').addEventListener('change', (e) => {
+  if (guardExamSetting(() => { e.target.value = sim.profileName; })) return;
   sim.setProfile(e.target.value);
   toast(e.target.value === 'exam'
     ? '試験場仕様機: 二次抵抗制御 — 速度は荷で変わり、ノッチ0は惰行です'
     : 'インバータ機(標準)');
 });
 $('set-cg').addEventListener('input', (e) => {
+  if (guardExamSetting(() => {
+    e.target.value = 0;
+    $('set-cg-val').textContent = '0.00';
+  })) return;
   const v = Number(e.target.value);
   $('set-cg-val').textContent = v.toFixed(2);
   sim.setCgOffset(v, 0);
@@ -253,7 +294,13 @@ function frame(now) {
   sim.step(slowmo ? dt * 0.25 : dt);
 
   const rs = sim.getRenderState();
-  if (walkActive) walker.update(dt, walkKeys, scene.cabYaw, rs.X, rs.Y);
+  // 技能講習中はカメラを切替えてもオペレータはペンダントケーブルに追従し、
+  // 立ち位置規則(直下・前方)の採点が続く(床上操作式の定義どおり)
+  const floorActive = floorExam.state !== 'idle' && floorExam.state !== 'done';
+  if (walkActive || floorActive) {
+    walker.update(dt, walkActive ? walkKeys : { fwd: 0, strafe: 0 }, scene.cabYaw, rs.X, rs.Y);
+  }
+  scene.walkerActive = walkActive || floorActive;
   scene.update(rs, dt);
   audio.update(rs, dt);
   // 課題の計時はシミュレーション時刻に同期(描画レートの影響を受けない)
@@ -261,7 +308,7 @@ function frame(now) {
   lastSimTime = sim.time;
   task.update(rs, simDt);
   exam.update(rs, simDt);
-  floorExam.update(rs, simDt, walker, walkActive);
+  floorExam.update(rs, simDt, walker, walkActive || floorActive);
 
   hudAccum += dt;
   if (hudAccum >= 1 / 15) {   // HUD・スコープは 15Hz で十分

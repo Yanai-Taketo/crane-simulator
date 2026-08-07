@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { CallSequencer } from '../js/exam/calls.js';
 import { checkContacts } from '../js/exam/collision.js';
 import { FLOOR_COURSE as C } from '../js/exam/course-floor.js';
+import { CraneSimulator } from '../js/physics/simulator.js';
 
 test('呼称: perform で順に進み、consumeThrough が未実施分を返す', () => {
   const seq = new CallSequencer([
@@ -74,6 +75,25 @@ test('コース幾何: 柵回廊の幅・バーポール間隔・発着円の位
   assert.equal(C.calls.length, 22);
   assert.equal(C.calls[0].id, 'shui');
   assert.equal(C.calls.at(-1).id, 'landed');
+});
+
+test('3 動作同時投入の検出(ペンダント可・運転室はインターロック)', () => {
+  const sim = new CraneSimulator();
+  sim.setCommand({ travel: 1, traverse: 1, hoist: 1, step: 1 });
+  assert.equal(sim.getRenderState().activeAxes, 3);
+  sim.setCommand({ travel: 1, traverse: 1, hoist: 0, step: 1 });
+  assert.equal(sim.getRenderState().activeAxes, 2);
+  sim.setLevers({ travel: 1, traverse: 1, hoist: 1 });   // 3 動作目は遮断される
+  assert.ok(sim.getRenderState().activeAxes <= 2);
+});
+
+test('ドラム形状の設定でフック支持面が円柱相当に縮む', () => {
+  const sim = new CraneSimulator();
+  sim.setLoadShape({ r: 0.2925, h: 0.89 });
+  assert.ok(Math.abs(sim.p.hookBlock.halfX - 0.2925 * 0.75) < 1e-9);
+  assert.ok(Math.abs(sim.p.hookBlock.top - 0.89) < 1e-9);
+  sim.setLoadShape(null);
+  assert.ok(sim.p.hookBlock.halfX >= 0.6 - 1e-9);
 });
 
 test('コース幾何: 4 脚が閉路をなし発着点へ戻る', () => {

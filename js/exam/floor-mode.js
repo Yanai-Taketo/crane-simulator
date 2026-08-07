@@ -45,15 +45,17 @@ export class FloorExam {
     this.aheadTimer = 0;
     this.aheadDeducted = false;
     this.traj = [];
+    this.trajAcc = 1;
     this._lastPrompt = '';
     this.state = 'prep';
     sim.setCgOffset(0, 0);
     sim.loadMass = C.loadMass;
     sim.placeLoad(C.start.x, C.start.y);
-    this.scene.setZone('start', C.start.x, C.start.y, true);
+    this.scene.setZone('start', C.start.x, C.start.y, true, C.start.r);
     this.scene.setZone('target', 0, 0, false);
     this.scene.setCourse(C);
     this.scene.setLoadStyle('drum');
+    sim.setLoadShape(C.drum);
     $('task-panel-title').textContent = '技能講習 修了試験';
     this.panel.classList.remove('hidden');
     this.elResult.classList.add('hidden');
@@ -68,6 +70,7 @@ export class FloorExam {
     this.panel.classList.add('hidden');
     this.scene.setCourse(null);
     this.scene.setLoadStyle('box');
+    this.sim?.setLoadShape(null);
     $('task-panel-title').textContent = '運搬課題';
   }
 
@@ -124,12 +127,20 @@ export class FloorExam {
     const moving = horizSpeed > 0.03 || Math.abs(rs.speeds.hoist) > 0.01;
     const lx = rs.loadPos.x, ly = rs.loadPos.y;
 
-    // ---- 接触判定(ドラム = 鉛直円柱 + フック球) ----
+    // ---- 接触判定(ドラム = 鉛直円柱 + フック球 + 吊り具・ロープの鉛直円柱) ----
     const load = rs.loadAttached
       ? { x: lx, y: ly, z: rs.loadPos.z, r: C.drum.r, halfZ: C.drum.h / 2 }
       : null;
     const hook = { x: rs.hookPos.x, y: rs.hookPos.y, z: rs.hookPos.z, r: 0.3 };
     const hits = checkContacts(load, hook, C.obstacles);
+    const rigLo = load ? rs.loadPos.z + C.drum.h / 2 : rs.hookPos.z;
+    const rig = {
+      x: rs.hookPos.x, y: rs.hookPos.y, r: load ? 0.22 : 0.12,
+      z: (rigLo + 7.9) / 2, halfZ: (7.9 - rigLo) / 2,
+    };
+    for (const id of checkContacts(rig, null, C.obstacles)) {
+      if (!hits.includes(id)) hits.push(id);
+    }
     for (const id of hits) {
       if (id === 'BAR') {
         // バーは 5 cm の受け金具に載っているだけ → 接触即落下
@@ -150,6 +161,10 @@ export class FloorExam {
         this.sheet.edge(`c:${ob.id}`, '', '', 0, this.time, false);
       }
     }
+
+    // 3 ボタン同時押しの禁止(基発第66号)
+    this.sheet.edge('threeOp', 'threeOp', '3動作同時投入', P.threeOp, this.time,
+      (rs.activeAxes ?? 0) >= 3);
 
     // ---- 歩行オペレータの位置規則(クレーン則29条・エレファン図12) ----
     if (walkerOn && walker && rs.loadAttached && bottomZ > 0.05) {
@@ -187,12 +202,21 @@ export class FloorExam {
         if (rs.loadAttached && bottomZ > 0.05) { this.state = 'ground'; this.stopTimer = 0; }
         break;
       case 'ground':
+        if (!rs.loadAttached) {           // 置き直し・掛け直し → 準備からやり直し
+          this.state = 'prep';
+          this.groundStopDone = false;
+          this.stopTimer = 0;
+          this.liftCalled = false;
+          this._refresh();
+          break;
+        }
         if (bottomZ > 0.05 && bottomZ < 0.25 && !moving) {
           this.stopTimer += dt;
           if (this.stopTimer >= 1.0 && !this.groundStopDone) this.groundStopDone = true;
         } else {
           this.stopTimer = 0;
-          if (bottomZ > 0.45 && !this.groundStopDone) {
+          // 停止せずそのまま上げ続ける/走り出す(0.25–0.45 m 帯でも成立)
+          if (!this.groundStopDone && (bottomZ > 0.45 || (bottomZ > 0.05 && horizSpeed > 0.15))) {
             this.sheet.add('noStopGround', '地切り一旦停止なし', P.noStopGround, this.time);
             this.groundStopDone = true;
           }
@@ -203,9 +227,15 @@ export class FloorExam {
         }
         break;
       case 'run': {
+        if (!rs.loadAttached) break;      // 途中で降ろした場合は掛け直しを待つ(進行・採点停止)
         this.maxSway = Math.max(this.maxSway, rs.sway.amp);
-        this.traj.push([lx, ly, rs.sway.amp]);
-        if (this.traj.length > 4000) this.traj.shift();
+        // 軌跡は約 8 Hz に間引き(4000 点で 7 分をカバー)
+        this.trajAcc += dt;
+        if (this.trajAcc >= 0.12) {
+          this.trajAcc = 0;
+          this.traj.push([lx, ly, rs.sway.amp]);
+          if (this.traj.length > 4000) this.traj.shift();
+        }
 
         const inBar = Math.abs(lx - C.bar.x) < C.bar.zoneR && Math.abs(ly - C.bar.y) < 1.5;
         const leg = C.legs[this.legIdx];
@@ -219,11 +249,10 @@ export class FloorExam {
         if (lx > C.bar.x + 0.8 && Math.abs(ly - C.bar.y) < 1.5 && rs.speeds.hoist < -0.03) {
           this._consume('hoistdown');
         }
-        // 低所搬送の高さ帯(バー越え区間は除外)
+        // 低所搬送の高さ帯(バー越え区間は除外。帯内復帰まで再計上しない)
         const offBand = bottomZ < C.carryBand.lo || bottomZ > C.carryBand.hi;
         this.sheet.edge('height', 'height', '搬送高さ不良', P.height, this.time,
-          offBand && horizSpeed > 0.08 && !inBar);
-        if (!offBand) this.sheet.edge('height', '', '', 0, this.time, false);
+          offBand && horizSpeed > 0.08 && !inBar, !offBand);
 
         if (this.legIdx >= C.legs.length) { this.state = 'land'; this._refresh(); }
         break;

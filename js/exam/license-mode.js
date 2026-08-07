@@ -37,12 +37,15 @@ export class LicenseExam {
     this.setdownStopDone = false;
     this.prevOnGround = true;
     this.prevVz = 0;
+    this.swayEnv = 0;
+    this.swayTimer = 0;
     this.traj = [];
+    this.trajAcc = 1;
     this.state = 'prep-attach';
     sim.setCgOffset(0, 0);
     sim.loadMass = C.loadMass;
     sim.placeLoad(C.start.x, C.start.y);
-    this.scene.setZone('start', C.start.x, C.start.y, true);
+    this.scene.setZone('start', C.start.x, C.start.y, true, C.start.r);
     this.scene.setZone('target', 0, 0, false);
     this.scene.setCourse(C);
     $('task-panel-title').textContent = '運転士実技試験';
@@ -58,6 +61,7 @@ export class LicenseExam {
     this.state = 'idle';
     this.panel.classList.add('hidden');
     this.scene.setCourse(null);
+    this.scene.setZone('target', 0, 0, false);
     $('task-panel-title').textContent = '運搬課題';
   }
 
@@ -72,15 +76,25 @@ export class LicenseExam {
     const speed = Math.hypot(rs.speeds.travel, rs.speeds.traverse);
     const moving = speed > 0.03 || Math.abs(rs.speeds.hoist) > 0.01;
 
-    // 接触判定は準備段階から常時(吊り中の荷+フック vs 全障害物)
+    // 接触判定は準備段階から常時(吊り中の荷+フック+吊り具・ロープ vs 全障害物)
     const load = rs.loadAttached ? {
       x: rs.loadPos.x, y: rs.loadPos.y, z: rs.loadPos.z, yaw: rs.loadYaw,
       halfX: GEOM.load.sx / 2, halfY: GEOM.load.sy / 2, halfZ: GEOM.load.sz / 2,
     } : null;
     const hook = { x: rs.hookPos.x, y: rs.hookPos.y, z: rs.hookPos.z, r: 0.3 };
     const hits = checkContacts(load, hook, C.obstacles);
+    // 荷上端(玉外し中はフック)から吊点までの吊り具・ワイヤも細い鉛直円柱として判定
+    // — 荷をバーの下にくぐらせるとスリングがバーを払う実挙動を再現
+    const rigLo = load ? rs.loadPos.z + GEOM.load.sz / 2 : rs.hookPos.z;
+    const rig = {
+      x: rs.hookPos.x, y: rs.hookPos.y, r: load ? 0.25 : 0.12,
+      z: (rigLo + GEOM.pivotH) / 2, halfZ: (GEOM.pivotH - rigLo) / 2,
+    };
+    for (const id of checkContacts(rig, null, C.obstacles)) {
+      if (!hits.includes(id)) hits.push(id);
+    }
     for (const id of hits) {
-      const wall = id.startsWith('F');
+      const wall = id === 'F';
       const bar = id === 'B' || id === 'E';
       this.sheet.edge(`c:${id}`, 'contact',
         wall ? `壁接触 (${id})` : bar ? `バー接触 (${id})` : `ポール接触 (${id})`,
@@ -91,6 +105,10 @@ export class LicenseExam {
     for (const ob of C.obstacles) {
       if (!hits.includes(ob.id)) this.sheet.edge(`c:${ob.id}`, '', '', 0, this.time, false);
     }
+
+    // 3 動作同時投入(基発第66号: 押しボタン 3 個同時押しの禁止)
+    this.sheet.edge('threeOp', 'threeOp', '3動作同時投入', C.points.threeOp, this.time,
+      (rs.activeAxes ?? 0) >= 3);
 
     switch (this.state) {
       case 'prep-attach':
@@ -129,23 +147,35 @@ export class LicenseExam {
       case 'run': {
         this.time += dt;
         this.maxSway = Math.max(this.maxSway, rs.sway.amp);
-        this.traj.push([rs.loadPos.x, rs.loadPos.y, rs.sway.amp]);
-        if (this.traj.length > 4000) this.traj.shift();
+        // 軌跡は約 8 Hz に間引き(4000 点で全周をカバー)
+        this.trajAcc += dt;
+        if (this.trajAcc >= 0.12) {
+          this.trajAcc = 0;
+          this.traj.push([rs.loadPos.x, rs.loadPos.y, rs.sway.amp]);
+          if (this.traj.length > 4000) this.traj.shift();
+        }
 
-        // 荷振れ大(0.35 m 超のエクスカーションごとに 10 点)
-        this.sheet.edge('sway', 'sway', '荷振れ大', C.points.sway, this.time, rs.sway.amp > 0.35);
-        if (rs.sway.amp < 0.2) this.sheet.edge('sway', '', '', 0, this.time, false);
+        // 荷振れ大: 一往復あたり 10 点(調査値)。瞬時変位は半周期ごとに 0 を
+        // 通るため、振幅包絡で判定し振り子一周期に 1 回だけ計上する
+        this.swayEnv = Math.max(rs.sway.amp, this.swayEnv * Math.exp(-dt / 1.5));
+        this.swayTimer -= dt;
+        if (this.swayEnv > 0.35 && this.swayTimer <= 0) {
+          this.sheet.add('sway', '荷振れ大', C.points.sway, this.time);
+          const Leff = Math.max(1, GEOM.pivotH - rs.loadPos.z);
+          this.swayTimer = 2 * Math.PI * Math.sqrt(Leff / 9.81);
+        }
 
-        // 搬送高さ逸脱(バー越え区間は上方向を許容)
+        // 搬送高さ逸脱(バー越え区間は上方向を許容。帯内復帰まで再計上しない)
         const nearBar = C.barZones.some(z => Math.hypot(rs.loadPos.x - z.x, rs.loadPos.y - z.y) < z.r);
         const tooLow = bottomZ < C.carryHeight - C.carryTol;
         const tooHigh = bottomZ > C.carryHeight + C.carryTol && !nearBar;
-        this.sheet.edge('height', 'height', '搬送高さ不良', C.points.height, this.time, (tooLow || tooHigh) && speed > 0.05);
-        if (!tooLow && !tooHigh) this.sheet.edge('height', '', '', 0, this.time, false);
+        this.sheet.edge('height', 'height', '搬送高さ不良', C.points.height, this.time,
+          (tooLow || tooHigh) && speed > 0.05, !tooLow && !tooHigh);
 
-        // 経由点
+        // 経由点(門・ギャップは搬送高さ帯で通過してこそ経由。上空通過は不経由)
         const wp = C.waypoints[this.wpIndex];
-        if (wp && Math.hypot(rs.loadPos.x - wp.x, rs.loadPos.y - wp.y) < wp.r) {
+        if (wp && Math.hypot(rs.loadPos.x - wp.x, rs.loadPos.y - wp.y) < wp.r
+            && bottomZ < (wp.zMax ?? 3.0)) {
           this.wpIndex++;
           if (this.wpIndex >= C.waypoints.length) {
             this._say('S へ戻り、<b>着床前 10–20 cm で一旦停止</b>してから円内に着床・玉外し');
@@ -194,7 +224,7 @@ export class LicenseExam {
   _nextWp(){
     const wp = C.waypoints[this.wpIndex];
     if (wp) this._say(`次の経由点: <b>${wp.label}</b>(${this.wpIndex + 1}/${C.waypoints.length})`);
-    if (wp) this.scene.setZone('target', wp.x, wp.y, true);
+    if (wp) this.scene.setZone('target', wp.x, wp.y, true, wp.r);
   }
 
   _finish() {

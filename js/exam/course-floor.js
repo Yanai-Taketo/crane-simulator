@@ -77,6 +77,6 @@ export const FLOOR_COURSE = {
     call: 2, callCap: 20,          // 呼称漏れ -2/件(上限 20)
     underLoad: 5, aheadOfLoad: 5,
     height: 5, noStopGround: 5, noStopSetdown: 5,
-    impact: 5, outOfZone: 5, timeOver: 100,
+    impact: 5, outOfZone: 5, timeOver: 100, threeOp: 5,
   },
 };

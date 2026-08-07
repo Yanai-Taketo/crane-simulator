@@ -14,13 +14,15 @@ export class DeductionSheet {
   }
 
   // 継続イベント: 開始エッジのみ計上。key は個体識別(例: 'contact:A1')
-  edge(key, code, label, points, t, activeNow) {
-    if (activeNow && !this._active.has(key)) {
+  // releaseNow を分けるとヒステリシスを表現できる(省略時は !triggerNow で解除)。
+  // 例: 振れ 0.35 m 超で計上・0.2 m 未満まで解除しない → 中間帯での再計上を防ぐ
+  edge(key, code, label, points, t, triggerNow, releaseNow = !triggerNow) {
+    if (triggerNow && !this._active.has(key)) {
       this._active.add(key);
       this.add(code, label, points, t);
       return true;
     }
-    if (!activeNow) this._active.delete(key);
+    if (!triggerNow && releaseNow) this._active.delete(key);
     return false;
   }
 
