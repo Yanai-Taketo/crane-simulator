@@ -106,6 +106,10 @@ setActive(modeBtns, 'btn-mode-free');
 $('btn-reset').addEventListener('click', () => {
   sim.reset();
   sim.setWind(Number($('set-wind').value));   // 設定パネルの表示値と同期を保つ
+  if (ctrlMode === 'cab') {                   // 運転室モード中は全ノッチ中立で再開
+    leverPanel.zeroAll();
+    sim.setLevers(leverPanel.notches);
+  }
   sim.placeLoad(START_POS.x, START_POS.y);
   scope.reset();
   scene.setTrailVisible($('set-trails').checked);
