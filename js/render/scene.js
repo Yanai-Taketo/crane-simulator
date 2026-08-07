@@ -462,12 +462,14 @@ export class SceneManager {
   _buildLoad() {
     const { load } = GEOM;
     this.loadMesh = new THREE.Group();
+    this._boxParts = [];
     const body = new THREE.Mesh(
       new THREE.BoxGeometry(load.sx, load.sz, load.sy),
       new THREE.MeshStandardMaterial({ color: COL.load, roughness: 0.8 })
     );
     body.castShadow = true; body.receiveShadow = true;
     this.loadMesh.add(body);
+    this._boxParts.push(body);
     for (const bz of [-load.sz * 0.3, load.sz * 0.3]) {
       const band = new THREE.Mesh(
         new THREE.BoxGeometry(load.sx + 0.02, 0.06, load.sy + 0.02),
@@ -475,7 +477,25 @@ export class SceneManager {
       );
       band.position.y = bz;
       this.loadMesh.add(band);
+      this._boxParts.push(band);
     }
+    // ドラム缶(JIS Z 1600 D 型 φ0.585×0.89・技能講習コース用)— 既定は非表示
+    this.loadStyle = 'box';
+    this.drumMesh = new THREE.Group();
+    const drumBody = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.2925, 0.2925, 0.89, 28),
+      new THREE.MeshStandardMaterial({ color: 0x2f6bb3, roughness: 0.55, metalness: 0.25 })
+    );
+    drumBody.castShadow = true; drumBody.receiveShadow = true;
+    this.drumMesh.add(drumBody);
+    const hoopMat = new THREE.MeshStandardMaterial({ color: 0x24507f, roughness: 0.45, metalness: 0.4 });
+    for (const hz of [-0.89 * 0.22, 0.89 * 0.22, 0.435]) {   // ローリングフープ×2+天面チャイム
+      const hoop = new THREE.Mesh(new THREE.CylinderGeometry(0.301, 0.301, 0.035, 28), hoopMat);
+      hoop.position.y = hz;
+      this.drumMesh.add(hoop);
+    }
+    this.drumMesh.visible = false;
+    this.loadMesh.add(this.drumMesh);
     this.scene.add(this.loadMesh);
 
     // 玉掛けワイヤ(4本・たるみ弧付き 5 セグメント描画)
@@ -485,9 +505,18 @@ export class SceneManager {
     this.slings = new THREE.LineSegments(this.slingGeo, new THREE.LineBasicMaterial({ color: COL.sling }));
     this.slings.frustumCulled = false;
     this.scene.add(this.slings);
-    // スリング張り切り長(フック下端→荷上面コーナー)
+    // スリング張り切り長(フック下端→荷上面コーナー / ドラム天面リム)
     const cornerOff = Math.hypot(GEOM.load.sx * 0.45, GEOM.load.sy * 0.45);
     this.slingTaut = Math.hypot(GEOM.slingLen, cornerOff);
+    this.slingTautDrum = Math.hypot(GEOM.slingLen, 0.26);
+  }
+
+  // 吊荷の見た目: 'box'(直方体・4 本吊り)/ 'drum'(ドラム缶・3 本吊りチェーン)
+  setLoadStyle(style) {
+    this.loadStyle = style;
+    const drum = style === 'drum';
+    for (const m of this._boxParts) m.visible = !drum;
+    this.drumMesh.visible = drum;
   }
 
   _buildTrail() {
@@ -536,13 +565,16 @@ export class SceneManager {
       this.scene.remove(this.courseGroup);
       this.courseGroup.traverse(o => { o.geometry?.dispose?.(); });
       this.courseGroup = null;
+      this.courseMeshes = null;
     }
     if (!course) return;
     const g = new THREE.Group();
+    this.courseMeshes = {};
     const poleMat = new THREE.MeshStandardMaterial({ color: 0xe8c33a, roughness: 0.6 });
     const baseMat = new THREE.MeshStandardMaterial({ color: 0x333940, roughness: 0.8 });
     const barMat = new THREE.MeshStandardMaterial({ color: 0xd84a3a, roughness: 0.6 });
     const wallMat = new THREE.MeshStandardMaterial({ color: 0x8fa3b8, roughness: 0.9, transparent: true, opacity: 0.55, side: THREE.DoubleSide });
+    const fenceMat = new THREE.MeshStandardMaterial({ color: 0xb9a13c, roughness: 0.75, transparent: true, opacity: 0.8, side: THREE.DoubleSide });
     for (const ob of course.obstacles) {
       if (ob.type === 'pole') {
         const h = ob.zHi - ob.zLo;
@@ -552,20 +584,31 @@ export class SceneManager {
         const base = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.4, 0.1, 16), baseMat);
         base.position.set(ob.x, 0.05, ob.y);
         g.add(pole, base);
+        this.courseMeshes[ob.id] = pole;
       } else {
         const h = ob.zHi - ob.zLo;
-        const tall = ob.zLo < 0.5 && ob.zHi > 3.0;   // 壁・フェンス
+        const tall = ob.zLo < 0.5 && ob.zHi > 3.0;   // 壁(上に逃げられない)
         const m = new THREE.Mesh(
           new THREE.BoxGeometry(ob.halfX * 2, h, ob.halfY * 2),
-          tall ? wallMat : barMat
+          ob.kind === 'fence' ? fenceMat : tall ? wallMat : barMat
         );
         m.position.set(ob.x, ob.zLo + h / 2, ob.y);
-        m.castShadow = !tall;
+        m.castShadow = !tall && ob.kind !== 'fence';
         g.add(m);
+        this.courseMeshes[ob.id] = m;
       }
     }
     this.scene.add(g);
     this.courseGroup = g;
+  }
+
+  // バー障害の落下表現(受け金具から外れて床へ)
+  dropBar(id) {
+    const m = this.courseMeshes?.[id];
+    if (!m || m.userData.dropped) return;
+    m.userData.dropped = true;
+    m.position.y = 0.06;
+    m.rotation.y = 0.22;   // わずかに斜めに転がった見た目
   }
 
   setZone(which, x, y, visible = true) {
@@ -672,19 +715,27 @@ export class SceneManager {
       const { load } = GEOM;
       const hp = this.hookBlock.position;
       let s = 0;
-      const corners = [[-1, -1], [-1, 1], [1, -1], [1, 1]];
-      for (const [cx, cz] of corners) {
-        // 始点: フック下端 / 終点: 吊荷上面コーナー
+      // 玉掛け点: 箱 = 上面 4 隅 / ドラム = 天面リム 3 点(3 本吊り。4 本目は縮退)
+      const taut = this.loadStyle === 'drum' ? this.slingTautDrum : this.slingTaut;
+      const pts = this.loadStyle === 'drum'
+        ? [0, 1, 2, 2].map((k) => {
+            const a = Math.PI / 2 + k * (2 * Math.PI / 3);
+            return [Math.cos(a) * 0.26, 0.445, Math.sin(a) * 0.26];
+          })
+        : [[-1, -1], [-1, 1], [1, -1], [1, 1]].map(([cx, cz]) =>
+            [cx * load.sx * 0.45, load.sz * 0.5, cz * load.sy * 0.45]);
+      for (const [px, py, pz] of pts) {
+        // 始点: フック下端 / 終点: 玉掛け点
         const sx0 = hp.x, sy0 = hp.y - 0.45, sz0 = hp.z;
-        this._tmpV2.set(cx * load.sx * 0.45, load.sz * 0.5, cz * load.sy * 0.45)
+        this._tmpV2.set(px, py, pz)
           .applyQuaternion(this.loadMesh.quaternion)
           .add(this.loadMesh.position);
         const ex = this._tmpV2.x, ey = this._tmpV2.y, ez = this._tmpV2.z;
         // 弦長と張り切り長からたるみ量(放物線近似)を計算。
         // 弛みは荷の内部へ入らないよう「外側へ膨らむ」ドレープで描く
         const c = Math.hypot(ex - sx0, ey - sy0, ez - sz0);
-        const slackLen = Math.max(0, this.slingTaut - c);
-        const sag = slackLen > 0.005 ? Math.min(0.4 * this.slingTaut, Math.sqrt(3 * Math.max(0.05, c) * slackLen / 8)) : 0;
+        const slackLen = Math.max(0, taut - c);
+        const sag = slackLen > 0.005 ? Math.min(0.4 * taut, Math.sqrt(3 * Math.max(0.05, c) * slackLen / 8)) : 0;
         let ox = ex - this.loadMesh.position.x, oz = ez - this.loadMesh.position.z;
         const ol = Math.hypot(ox, oz) || 1;
         ox /= ol; oz /= ol;

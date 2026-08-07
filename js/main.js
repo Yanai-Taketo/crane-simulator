@@ -10,6 +10,7 @@ import { SwayScope } from './ui/swayscope.js';
 import { TrainingTask, START_POS } from './training.js';
 import { Walker } from './ui/walker.js';
 import { LicenseExam } from './exam/license-mode.js';
+import { FloorExam } from './exam/floor-mode.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -35,6 +36,15 @@ function toast(msg, ms = 2600) {
 
 const task = new TrainingTask(scene, toast);
 const exam = new LicenseExam(scene, toast);
+const floorExam = new FloorExam(scene, toast);
+
+// V キー: 指差呼称(技能講習モード)
+window.addEventListener('keydown', (e) => {
+  if (e.code !== 'KeyV' || e.repeat) return;
+  const t = e.target;
+  if (t instanceof HTMLElement && (t.tagName === 'INPUT' || t.tagName === 'SELECT')) return;
+  floorExam.call();
+});
 
 // ---- ペンダント結線 ----
 pendant.onEstop = () => {
@@ -144,14 +154,14 @@ $('btn-ctrl-pendant').addEventListener('click', () => setControlMode('pendant'))
 $('btn-ctrl-cab').addEventListener('click', () => setControlMode('cab'));
 setActive(ctrlBtns, 'btn-ctrl-pendant');
 
-const modeBtns = ['btn-mode-free', 'btn-mode-task', 'btn-mode-exam'];
-$('btn-mode-free').addEventListener('click', () => { task.cancel(); exam.cancel(); setActive(modeBtns, 'btn-mode-free'); toast('自由練習モード'); });
+const modeBtns = ['btn-mode-free', 'btn-mode-task', 'btn-mode-exam', 'btn-mode-floor'];
+$('btn-mode-free').addEventListener('click', () => { task.cancel(); exam.cancel(); floorExam.cancel(); setActive(modeBtns, 'btn-mode-free'); toast('自由練習モード'); });
 $('btn-mode-task').addEventListener('click', () => {
-  exam.cancel();
+  exam.cancel(); floorExam.cancel();
   if (task.start(sim)) setActive(modeBtns, 'btn-mode-task');
 });
 $('btn-mode-exam').addEventListener('click', () => {
-  task.cancel();
+  task.cancel(); floorExam.cancel();
   if (exam.start(sim)) {
     setActive(modeBtns, 'btn-mode-exam');
     // 実試験と同じ 5t 試験場仕様機(二次抵抗制御)に切替・荷は 1t 固定
@@ -160,6 +170,20 @@ $('btn-mode-exam').addEventListener('click', () => {
     $('set-mass').value = 1000; $('set-mass-val').textContent = '1000';
     $('set-cg').value = 0; $('set-cg-val').textContent = '0.00';
     toast('運転士実技試験: 試験場仕様機(二次抵抗制御)に切替えました');
+  }
+});
+$('btn-mode-floor').addEventListener('click', () => {
+  task.cancel(); exam.cancel();
+  if (floorExam.start(sim)) {
+    setActive(modeBtns, 'btn-mode-floor');
+    // 床上操作式 = ペンダント+荷と共に歩く(インバータ機・ドラム缶 500 kg)
+    sim.setProfile('inverter');
+    $('set-profile').value = 'inverter';
+    $('set-mass').value = 500; $('set-mass-val').textContent = '500';
+    $('set-cg').value = 0; $('set-cg-val').textContent = '0.00';
+    setControlMode('pendant');
+    camSelect('walk', 'btn-cam-walk');
+    toast('技能講習: 歩行モードで荷に付いて歩き、V で指差呼称');
   }
 });
 setActive(modeBtns, 'btn-mode-free');
@@ -177,6 +201,7 @@ $('btn-reset').addEventListener('click', () => {
   scene.setTrailVisible($('set-trails').checked);
   if (task.state !== 'idle') task.cancel();
   if (exam.state !== 'idle') exam.cancel();
+  if (floorExam.state !== 'idle') floorExam.cancel();
   setActive(modeBtns, 'btn-mode-free');
   toast('リセットしました');
 });
@@ -236,6 +261,7 @@ function frame(now) {
   lastSimTime = sim.time;
   task.update(rs, simDt);
   exam.update(rs, simDt);
+  floorExam.update(rs, simDt, walker, walkActive);
 
   hudAccum += dt;
   if (hudAccum >= 1 / 15) {   // HUD・スコープは 15Hz で十分
@@ -253,3 +279,4 @@ requestAnimationFrame(frame);
 window.__craneSim = sim;
 window.__craneScene = scene;
 window.__craneExam = exam;
+window.__craneFloorExam = floorExam;
