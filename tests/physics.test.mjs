@@ -273,3 +273,43 @@ test('ファズ: ランダム操作 120 秒で NaN・発散なし', () => {
     }
   }
 });
+
+test('回帰: 玉掛け許容高さ内でも初期伸びが生じる場合は拒否(吊荷射出防止)', () => {
+  const sim = new CraneSimulator({ loadMass: 1000 });
+  sim.placeLoad(8, 8);
+  // フック下端を 2.3 m(旧許容窓の上半分 = ロープ予伸張 0.3 m 相当)に配置
+  sim.L = GEOM.pivotH - (2.3 + GEOM.hookHalf);
+  sim.s[4] = 8; sim.s[5] = 8; sim.s[6] = 2.3 + GEOM.hookHalf;
+  sim.s[7] = sim.s[8] = sim.s[9] = 0;
+  sim._refreshAux();
+  const r = sim.tryToggleHook();
+  assert.ok(!r.ok, '予伸張状態の玉掛けは拒否されること');
+  assert.ok(r.msg.includes('高すぎ'), r.msg);
+  // 適正高さ(スリング丈より低く・ロープたるみ側)では成功すること
+  sim.L = GEOM.pivotH - (1.95 + GEOM.hookHalf);
+  sim.s[6] = 1.95 + GEOM.hookHalf;
+  sim._refreshAux();
+  const r2 = sim.tryToggleHook();
+  assert.ok(r2.ok, `適正高さで玉掛けできること: ${r2.msg}`);
+  // 結合直後に張力が跳ねないこと(1 秒運転して確認)
+  sim.setCommand({ travel: 0, traverse: 0, hoist: 0, step: 1 });
+  let maxT = 0;
+  for (let i = 0; i < 60; i++) { sim.step(1 / 60); maxT = Math.max(maxT, sim.aux.T); }
+  assert.ok(maxT < 2000, `結合直後の張力スパイク ${maxT} N`);
+});
+
+test('回帰: 非常停止は操作ボタンを離すまで復帰せず勝手に再走行しない', () => {
+  const sim = new CraneSimulator({ loadMass: 1000 });
+  sim.setCommand({ travel: 1, traverse: 0, hoist: 0, step: 2 });
+  for (let i = 0; i < 60 * 5; i++) sim.step(1 / 60);
+  assert.ok(Math.abs(sim.s[1]) > 0.3, '走行中であること');
+  sim.estop();
+  // ボタンは押しっぱなしのまま 6 秒経過
+  for (let i = 0; i < 60 * 6; i++) sim.step(1 / 60);
+  assert.ok(sim.estopActive, '押下中は非常停止が保持されること');
+  assert.ok(Math.abs(sim.s[1]) < 0.02, '停止していること');
+  // ボタンを離すと復帰し、以後は通常運転できる
+  sim.setCommand({ travel: 0, traverse: 0, hoist: 0, step: 1 });
+  for (let i = 0; i < 60 * 2; i++) sim.step(1 / 60);
+  assert.ok(!sim.estopActive, '全ボタン解放後に復帰すること');
+});

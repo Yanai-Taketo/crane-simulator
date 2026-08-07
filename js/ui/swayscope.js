@@ -14,9 +14,11 @@ export class SwayScope {
     const cx = w / 2, cy = h / 2;
     const scale = (w / 2 - 12) / this.range;
 
-    // 吊荷の水平偏差(物理座標: x=東, y=南 → 画面: 右=東, 下=南)
-    const dx = rs.loadPos.x - rs.X;
-    const dy = rs.loadPos.y - rs.Y;
+    // 吊り体(玉掛け時は吊荷、単独時はフック)の水平偏差
+    // (物理座標: x=東, y=南 → 画面: 右=東, 下=南)
+    const p = rs.loadAttached ? rs.loadPos : rs.hookPos;
+    const dx = p.x - rs.X;
+    const dy = p.y - rs.Y;
     this.hist.push({ x: dx, y: dy });
     if (this.hist.length > this.histMax) this.hist.shift();
 

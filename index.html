@@ -62,8 +62,9 @@
       <button class="pbtn pbtn-wide pbtn-danger" id="btn-estop">非常停止</button>
     </div>
     <div class="keys-help">
-      <div>キー操作: <b>← →</b> 走行 / <b>↑ ↓</b> 横行</div>
+      <div>キー操作: <b>← →</b> 走行(西/東) / <b>↑ ↓</b> 横行(北/南)</div>
       <div><b>W</b> 巻上 / <b>S</b> 巻下 / <b>Shift</b> 2速 / <b>E</b> 玉掛け</div>
+      <div><b>Space</b> 非常停止</div>
     </div>
   </div>
 
@@ -100,7 +101,7 @@
       <input type="range" id="set-wind" min="0" max="8" step="0.5" value="0"></label>
     <label class="set-row set-check"><input type="checkbox" id="set-trails"> 吊荷の軌跡を表示</label>
     <label class="set-row set-check"><input type="checkbox" id="set-slowmo"> スローモーション (1/4倍速)</label>
-    <div class="set-note">物理演算: 剛体拘束モデル・RK4(720 Hz)</div>
+    <div class="set-note">物理演算: 弾性ワイヤロープ連成ニュートンモデル・RK4(720 Hz)</div>
   </div>
 
   <div id="toast" class="hidden"></div>

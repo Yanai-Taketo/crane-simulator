@@ -413,12 +413,16 @@ export class SceneManager {
       this.loadMesh.rotation.y = rs.loadYaw || 0;
     }
 
-    // 軌跡
+    // 軌跡(リングバッファ満杯時はクリアして描き直し — 巻き戻り線分の防止)
     if (this.trail.visible && rs.loadAttached) {
-      const i = (this.trailCount % this.trailMax) * 3;
+      if (this.trailCount >= this.trailMax) {
+        this.trailCount = 0;
+        this.trailGeo.setDrawRange(0, 0);
+      }
+      const i = this.trailCount * 3;
       this.trailPos[i] = this._tmpV.x; this.trailPos[i + 1] = this._tmpV.y; this.trailPos[i + 2] = this._tmpV.z;
       this.trailCount++;
-      this.trailGeo.setDrawRange(0, Math.min(this.trailCount, this.trailMax));
+      this.trailGeo.setDrawRange(0, this.trailCount);
       this.trailGeo.attributes.position.needsUpdate = true;
     }
 

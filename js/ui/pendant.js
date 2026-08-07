@@ -44,6 +44,9 @@ export class PendantInput {
   _bindKeys() {
     window.addEventListener('keydown', (e) => {
       if (e.repeat) return;
+      // スライダー等のフォーム操作中はクレーン操作キーを奪わない
+      const t = e.target;
+      if (t instanceof HTMLElement && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return;
       if (e.key === 'Shift') { this._shift = true; this._refresh(); return; }
       if (e.code === 'KeyE') { this.onHook?.(); return; }
       if (e.code === 'Space') { e.preventDefault(); this.onEstop?.(); return; }

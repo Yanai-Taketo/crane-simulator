@@ -51,6 +51,7 @@ setActive(modeBtns, 'btn-mode-free');
 
 $('btn-reset').addEventListener('click', () => {
   sim.reset();
+  sim.setWind(Number($('set-wind').value));   // 設定パネルの表示値と同期を保つ
   sim.placeLoad(START_POS.x, START_POS.y);
   scope.reset();
   scene.setTrailVisible($('set-trails').checked);
@@ -99,6 +100,7 @@ function frame(now) {
   if (hudAccum >= 1 / 15) {   // HUD・スコープは 15Hz で十分
     hud.update(rs, sim.time);
     scope.update(rs);
+    $('btn-hook-label').textContent = rs.loadAttached ? '玉外し' : '玉掛け';
     hudAccum = 0;
   }
 }

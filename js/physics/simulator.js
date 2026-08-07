@@ -105,6 +105,7 @@ export class CraneSimulator {
       const speed = Math.hypot(s[7], s[8], s[9]);
       if (!grounded) return { ok: false, attached: true, msg: '吊荷が接地していません。着床させてから外してください' };
       if (speed > 0.15) return { ok: false, attached: true, msg: '吊荷が動いています。静止させてから外してください' };
+      if (this.aux.T > 0.3 * this.p.mp * PHYS.g) return { ok: false, attached: true, msg: 'ロープが張っています。巻下げて緩めてから外してください' };
       // 吊荷を置き、フックを玉掛け前の位置(スリング上端相当)へ
       this.loadStatic = { x: s[4], y: s[5], yaw: 0 };
       const rig = this.p.rig;
@@ -123,8 +124,12 @@ export class CraneSimulator {
     const horiz = Math.hypot(s[4] - lt.x, s[5] - lt.y);
     const hookBottom = s[6] - GEOM.hookHalf;
     if (horiz > 0.6) return { ok: false, attached: false, msg: 'フックが吊荷の真上にありません(水平ずれ ' + horiz.toFixed(2) + ' m)' };
-    if (hookBottom > loadTop + GEOM.slingLen + 0.5) return { ok: false, attached: false, msg: 'フックが高すぎます。巻下げてください' };
     if (hookBottom < loadTop - 0.35) return { ok: false, attached: false, msg: 'フックが低すぎます。少し巻上げてください' };
+    // 結合直後にロープが張らない(伸びゼロ以下)ことを保証する。
+    // これを怠ると弾性ロープの予伸張で吊荷が跳ね上げられる。
+    const rigNew = GEOM.hookHalf + GEOM.slingLen + GEOM.load.sz / 2;
+    const distNew = Math.hypot(s[0] - lt.x, s[2] - lt.y, GEOM.pivotH - GEOM.load.sz / 2);
+    if (distNew > this.L + rigNew - 0.02) return { ok: false, attached: false, msg: 'フックが高すぎます。巻下げてください' };
     // 質点を吊荷重心へ移す(接地状態で結合)
     s[4] = lt.x; s[5] = lt.y;
     s[7] = 0; s[8] = 0; s[9] = 0;
@@ -142,8 +147,8 @@ export class CraneSimulator {
     this.acc += frameDt;
     const h = PHYS.dt;
     let n = Math.floor(this.acc / h);
-    if (n > 60) n = 60;                  // タブ復帰時などのスパイラル防止
-    this.acc -= n * h;
+    if (n > 60) { n = 60; this.acc = 0; }  // タブ復帰時などは残りを破棄(早送り防止)
+    else this.acc -= n * h;
     for (let i = 0; i < n; i++) this._substep(h);
   }
 
@@ -204,9 +209,11 @@ export class CraneSimulator {
       if (vh < 0.02 && Fh < 1.22 * p.mu * this.aux.N) { s[7] = 0; s[8] = 0; }
     }
 
-    // --- 非常停止の自動復帰(全軸停止後) ---
+    // --- 非常停止の復帰: 全軸停止かつ操作ボタンが全て離されていること ---
+    // (押したままの自動復帰は実機の非常停止の教育上も危険)
     if (es && Math.abs(s[1]) < 0.005 && Math.abs(s[3]) < 0.005 &&
-        Math.abs(this.dL) < 0.002 && this.vcmdX === 0 && this.vcmdY === 0) {
+        Math.abs(this.dL) < 0.002 && this.vcmdX === 0 && this.vcmdY === 0 &&
+        this.cmd.travel === 0 && this.cmd.traverse === 0 && this.cmd.hoist === 0) {
       this.estopActive = false;
       this._syncParams();
     }
@@ -220,11 +227,12 @@ export class CraneSimulator {
     const rx = s[4] - s[0], ry = s[5] - s[2], rz = s[6] - pivotH;
     const dist = Math.hypot(rx, ry, rz);
     const slack = this.aux.stretch < -0.01;
-    // フック描画位置: 玉掛け時はロープ線上、単独時は質点そのもの
+    // フック描画位置: 玉掛け時は吊点→質点の線上(張り状態では巻出し長 L の位置、
+    // たるみ時は吊荷の rig 分上に連続的に接続)、単独時は質点そのもの
     let hook;
     if (this.attached) {
-      if (!slack && dist > 1e-6) {
-        const f = this.L / dist;
+      if (dist > 1e-6) {
+        const f = Math.min(this.L, Math.max(0.15, dist - this.p.rig)) / dist;
         hook = { x: s[0] + rx * f, y: s[2] + ry * f, z: pivotH + rz * f };
       } else {
         hook = { x: s[0], y: s[2], z: pivotH - this.L };
@@ -262,7 +270,7 @@ export class CraneSimulator {
       T: this.aux.T,
       loadMass: this.attached ? this.attachedLoadMass : this.loadMass,
       sway: { angle: swayAngle, amp: horiz },
-      speeds: { travel: s[1], traverse: s[3], hoist: -this.dL },
+      speeds: { travel: s[1], traverse: s[3], hoist: -this.dL, loadVz: s[9] },
       warnings,
     };
   }
