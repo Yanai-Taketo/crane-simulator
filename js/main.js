@@ -5,6 +5,7 @@ import { PendantInput } from './ui/pendant.js';
 import { LeverPanel } from './ui/levers.js';
 import { CabKeys } from './ui/cab-keys.js';
 import { Hud } from './ui/hud.js';
+import { CraneAudio } from './ui/audio.js';
 import { SwayScope } from './ui/swayscope.js';
 import { TrainingTask, START_POS } from './training.js';
 
@@ -15,6 +16,11 @@ const scene = new SceneManager($('scene'));
 const pendant = new PendantInput();
 const hud = new Hud();
 const scope = new SwayScope($('swayscope'));
+const audio = new CraneAudio();
+
+// 警報ホーン(H 押下中)
+window.addEventListener('keydown', (e) => { if (e.code === 'KeyH' && !e.repeat) audio.horn(true); });
+window.addEventListener('keyup', (e) => { if (e.code === 'KeyH') audio.horn(false); });
 
 let toastTimer = 0;
 function toast(msg, ms = 2600) {
@@ -146,6 +152,8 @@ $('set-cg').addEventListener('input', (e) => {
   $('set-cg-val').textContent = v.toFixed(2);
   sim.setCgOffset(v, 0);
 });
+$('set-audio').addEventListener('change', (e) => audio.setEnabled(e.target.checked));
+$('set-audio-vol').addEventListener('input', (e) => audio.setVolume(Number(e.target.value)));
 let slowmo = false;
 $('set-slowmo').addEventListener('change', (e) => { slowmo = e.target.checked; });
 
@@ -167,6 +175,7 @@ function frame(now) {
 
   const rs = sim.getRenderState();
   scene.update(rs, dt);
+  audio.update(rs, dt);
   // 課題の計時はシミュレーション時刻に同期(描画レートの影響を受けない)
   const simDt = Math.max(0, sim.time - lastSimTime);
   lastSimTime = sim.time;
