@@ -1,7 +1,7 @@
 // クレーンシミュレータ本体: 駆動指令・ウインチ・玉掛け・接触・警報を統括
 import { rhsCartesian, totalEnergy } from './crane-model.js';
 import { makeRK4 } from './integrator.js';
-import { GEOM, CRANE, PHYS } from './params.js';
+import { GEOM, CRANE, PHYS, NOTCH } from './params.js';
 
 // ワイヤロープ実効軸剛性 [N]: JIS G 3525 6×Fi(29) φ12 の金属断面積 ≈ 70 mm²,
 // E ≈ 100 GPa → EA ≈ 7.0e6 N。2 本掛け(掛数2)のフック剛性 k = n·EA/L。
@@ -31,6 +31,8 @@ export class CraneSimulator {
     this.windMean = 0;
     this.gust = { x: 0, y: 0 };
     this.cmd = { travel: 0, traverse: 0, hoist: 0, step: 1 };
+    this.notches = { travel: 0, traverse: 0, hoist: 0 };
+    this.controlMode = 'pendant';   // 'pendant' | 'lever'(運転室)
     this.vcmdX = 0; this.vcmdY = 0;
     this.loadStatic = { x: 6, y: 4, yaw: 0 };  // 玉掛けされていない吊荷(置かれている)
     const s = this.s;
@@ -82,7 +84,26 @@ export class CraneSimulator {
     rhsCartesian(this.time, this.s, u, this.p, this.deriv, this.aux);
   }
 
-  setCommand(cmd) { this.cmd = cmd; }
+  setCommand(cmd) { this.cmd = cmd; this.controlMode = 'pendant'; }
+
+  // 運転室モード: ノッチ式コントローラー(検出位置保持・段付きレバー)
+  setLevers(n) {
+    const c = NOTCH.count;
+    this.notches = {
+      travel: clamp(Math.round(n.travel ?? this.notches.travel), -c, c),
+      traverse: clamp(Math.round(n.traverse ?? this.notches.traverse), -c, c),
+      hoist: clamp(Math.round(n.hoist ?? this.notches.hoist), -c, c),
+    };
+    this.controlMode = 'lever';
+  }
+
+  // 全操作が中立(ゼロノッチ)か — 非常停止復帰インターロックに使用
+  controlsNeutral() {
+    return this.controlMode === 'lever'
+      ? this.notches.travel === 0 && this.notches.traverse === 0 && this.notches.hoist === 0
+      : this.cmd.travel === 0 && this.cmd.traverse === 0 && this.cmd.hoist === 0;
+  }
+
   setLoadMass(kg) { this.loadMass = kg; }
   setWind(v) { this.windMean = v; }
 
@@ -155,20 +176,30 @@ export class CraneSimulator {
   _substep(h) {
     const s = this.s;
 
-    // --- 指令速度のランプ(台形加減速) ---
+    // --- 指令速度の決定(ペンダント 2 段速 / 運転室ノッチ多段速) ---
     const es = this.estopActive;
-    const tgtX = es ? 0 : this.cmd.travel * CRANE.travelSpeed[this.cmd.step - 1];
-    const tgtY = es ? 0 : this.cmd.traverse * CRANE.traverseSpeed[this.cmd.step - 1];
+    // インバータホイストの軽負荷高速: 吊り上げ質量が定格の 50% 未満なら最高速が増速
+    const hoistVmax = (this.p.mp < CRANE.ratedLoad * 0.5) ? CRANE.hoistSpeedLight : CRANE.hoistSpeed[1];
+    let tgtX, tgtY, tgtL;
+    if (this.controlMode === 'lever') {
+      const fr = (n) => Math.sign(n) * NOTCH.fractions[Math.abs(n)];
+      tgtX = es ? 0 : fr(this.notches.travel) * CRANE.travelSpeed[1];
+      tgtY = es ? 0 : fr(this.notches.traverse) * CRANE.traverseSpeed[1];
+      tgtL = es ? 0 : -fr(this.notches.hoist) * hoistVmax;
+    } else {
+      tgtX = es ? 0 : this.cmd.travel * CRANE.travelSpeed[this.cmd.step - 1];
+      tgtY = es ? 0 : this.cmd.traverse * CRANE.traverseSpeed[this.cmd.step - 1];
+      const hoistSpd = this.cmd.step === 2 ? hoistVmax : CRANE.hoistSpeed[0];
+      tgtL = es ? 0 : -this.cmd.hoist * hoistSpd;
+    }
+
+    // --- 台形加減速ランプ ---
     const aX = CRANE.travelSpeed[1] / CRANE.travelRamp * (es ? 2.5 : 1);
     const aY = CRANE.traverseSpeed[1] / CRANE.traverseRamp * (es ? 2.5 : 1);
     this.vcmdX = clamp(tgtX, this.vcmdX - aX * h, this.vcmdX + aX * h);
     this.vcmdY = clamp(tgtY, this.vcmdY - aY * h, this.vcmdY + aY * h);
 
     // --- ウインチ(巻上 = L 減少)。逆駆動不能・速度制御 ---
-    // インバータホイストの軽負荷高速: 吊り上げ質量が定格の 50% 未満なら 2 速が増速
-    const hoistHigh = (this.p.mp < CRANE.ratedLoad * 0.5) ? CRANE.hoistSpeedLight : CRANE.hoistSpeed[1];
-    const hoistSpd = this.cmd.step === 2 ? hoistHigh : CRANE.hoistSpeed[0];
-    const tgtL = es ? 0 : -this.cmd.hoist * hoistSpd;
     const aL = CRANE.hoistSpeed[1] / CRANE.hoistRamp * (es ? 3 : 1);
     this.dL = clamp(tgtL, this.dL - aL * h, this.dL + aL * h);
     if ((this.L <= CRANE.ropeMin && this.dL < 0) || (this.L >= CRANE.ropeMax && this.dL > 0)) this.dL = 0;
@@ -209,11 +240,11 @@ export class CraneSimulator {
       if (vh < 0.02 && Fh < 1.22 * p.mu * this.aux.N) { s[7] = 0; s[8] = 0; }
     }
 
-    // --- 非常停止の復帰: 全軸停止かつ操作ボタンが全て離されていること ---
-    // (押したままの自動復帰は実機の非常停止の教育上も危険)
+    // --- 非常停止の復帰: 全軸停止かつ全操作が中立(ゼロノッチインターロック) ---
+    // (操作を入れたままの自動復帰は実機の非常停止の教育上も危険)
     if (es && Math.abs(s[1]) < 0.005 && Math.abs(s[3]) < 0.005 &&
         Math.abs(this.dL) < 0.002 && this.vcmdX === 0 && this.vcmdY === 0 &&
-        this.cmd.travel === 0 && this.cmd.traverse === 0 && this.cmd.hoist === 0) {
+        this.controlsNeutral()) {
       this.estopActive = false;
       this._syncParams();
     }
@@ -271,6 +302,8 @@ export class CraneSimulator {
       loadMass: this.attached ? this.attachedLoadMass : this.loadMass,
       sway: { angle: swayAngle, amp: horiz },
       speeds: { travel: s[1], traverse: s[3], hoist: -this.dL, loadVz: s[9] },
+      controlMode: this.controlMode,
+      notches: { travel: this.notches.travel, traverse: this.notches.traverse, hoist: this.notches.hoist },
       warnings,
     };
   }

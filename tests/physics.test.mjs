@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { rhsCartesian, totalEnergy } from '../js/physics/crane-model.js';
 import { makeRK4 } from '../js/physics/integrator.js';
 import { CraneSimulator } from '../js/physics/simulator.js';
-import { GEOM, CRANE, PHYS } from '../js/physics/params.js';
+import { GEOM, CRANE, PHYS, NOTCH } from '../js/physics/params.js';
 
 const g = PHYS.g;
 
@@ -312,4 +312,53 @@ test('回帰: 非常停止は操作ボタンを離すまで復帰せず勝手に
   sim.setCommand({ travel: 0, traverse: 0, hoist: 0, step: 1 });
   for (let i = 0; i < 60 * 2; i++) sim.step(1 / 60);
   assert.ok(!sim.estopActive, '全ボタン解放後に復帰すること');
+});
+
+test('運転室レバー: 各ノッチが規定の速度基準に到達し、位置を保持する', () => {
+
+  const sim = new CraneSimulator({ loadMass: 1000 });
+  for (let n = 1; n <= NOTCH.count; n++) {
+    sim.setLevers({ travel: n, traverse: 0, hoist: 0 });
+    for (let i = 0; i < 60 * 8; i++) sim.step(1 / 60);
+    const expected = NOTCH.fractions[n] * CRANE.travelSpeed[1];
+    const v = sim.getRenderState().speeds.travel;
+    assert.ok(Math.abs(v - expected) < 0.03, `ノッチ${n}: ${v} vs ${expected}`);
+  }
+  // レバーはディテント保持: 入力を触らず 5 秒経過しても速度を維持
+  const vBefore = sim.getRenderState().speeds.travel;
+  for (let i = 0; i < 60 * 5; i++) sim.step(1 / 60);
+  const vAfter = sim.getRenderState().speeds.travel;
+  assert.ok(Math.abs(vAfter - vBefore) < 0.02, `保持失敗 ${vBefore} → ${vAfter}`);
+  sim.setLevers({ travel: 0 });
+  for (let i = 0; i < 60 * 6; i++) sim.step(1 / 60);
+  assert.ok(Math.abs(sim.getRenderState().speeds.travel) < 0.02, 'ノッチ0で停止');
+});
+
+test('運転室レバー: ゼロノッチインターロック(レバー投入のままでは非常停止が復帰しない)', () => {
+  const sim = new CraneSimulator({ loadMass: 1000 });
+  sim.setLevers({ travel: 5, traverse: 0, hoist: 0 });
+  for (let i = 0; i < 60 * 6; i++) sim.step(1 / 60);
+  sim.estop();
+  for (let i = 0; i < 60 * 6; i++) sim.step(1 / 60);
+  assert.ok(sim.estopActive, 'レバー投入中は復帰しないこと');
+  assert.ok(Math.abs(sim.s[1]) < 0.02, '停止していること');
+  sim.setLevers({ travel: 0, traverse: 0, hoist: 0 });
+  for (let i = 0; i < 60 * 2; i++) sim.step(1 / 60);
+  assert.ok(!sim.estopActive, '全レバー中立で復帰すること');
+  // 復帰後は再度運転できる
+  sim.setLevers({ travel: 2 });
+  for (let i = 0; i < 60 * 6; i++) sim.step(1 / 60);
+  assert.ok(sim.getRenderState().speeds.travel > 0.05, '復帰後の再運転');
+});
+
+test('運転室レバー: 巻上ノッチと軽負荷高速・巻下でロープが繰り出される', () => {
+  const sim = new CraneSimulator({ loadMass: 1000 });
+  const L0 = sim.L;
+  sim.setLevers({ hoist: -3 });   // 巻下
+  for (let i = 0; i < 60 * 4; i++) sim.step(1 / 60);
+  assert.ok(sim.L > L0 + 0.05, `巻下で L 増加: ${L0} → ${sim.L}`);
+  sim.setLevers({ hoist: 5 });    // 巻上全速(フック+1000kg < 定格50% → 軽負荷高速)
+  for (let i = 0; i < 60 * 6; i++) sim.step(1 / 60);
+  const v = sim.getRenderState().speeds.hoist;
+  assert.ok(Math.abs(v - CRANE.hoistSpeedLight) < 0.02, `軽負荷高速 ${v} vs ${CRANE.hoistSpeedLight}`);
 });

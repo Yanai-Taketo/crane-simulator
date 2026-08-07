@@ -43,6 +43,18 @@
     <canvas id="swayscope" width="220" height="220"></canvas>
   </div>
 
+  <!-- 右側: 運転室ノッチレバー(運転室モード時のみ表示) -->
+  <div id="lever-panel" class="panel hidden">
+    <div class="hud-title">運転室コントローラー</div>
+    <div id="lever-levers"></div>
+    <div class="pendant-foot" style="margin-top:10px">
+      <button class="pbtn pbtn-wide" id="btn-hook2"><span id="btn-hook2-label">玉掛け</span></button>
+      <button class="pbtn pbtn-wide pbtn-danger" id="btn-estop2">非常停止</button>
+    </div>
+    <div class="lever-hint">ドラッグ/クリックでノッチ操作・ダブルクリックで中立<br>
+      キー: <b>← →</b> 走行 / <b>↑ ↓</b> 横行 / <b>W S</b> 巻上下 / <b>X</b> 全中立</div>
+  </div>
+
   <!-- 右側: ペンダントスイッチ -->
   <div id="pendant" class="panel">
     <div class="pendant-head">
@@ -73,7 +85,11 @@
     <button class="tbtn" id="btn-mode-free">自由練習</button>
     <button class="tbtn" id="btn-mode-task">運搬課題</button>
     <span class="tsep"></span>
+    <button class="tbtn" id="btn-ctrl-pendant">床上(ペンダント)</button>
+    <button class="tbtn" id="btn-ctrl-cab">運転室(レバー)</button>
+    <span class="tsep"></span>
     <button class="tbtn" id="btn-cam-orbit">俯瞰</button>
+    <button class="tbtn" id="btn-cam-cab">運転席</button>
     <button class="tbtn" id="btn-cam-operator">床上視点</button>
     <button class="tbtn" id="btn-cam-follow">フック追従</button>
     <span class="tsep"></span>

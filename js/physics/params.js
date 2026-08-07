@@ -50,6 +50,13 @@ export const CRANE = {
   traverseMin: 1.0, traverseMax: 15.0,
 };
 
+// 運転室モード: ノッチ式コントローラー(インバータ多段速)
+// fractions[n] = ノッチ n の速度基準(定格速度比)。実機調査に基づき設定。
+export const NOTCH = {
+  count: 5,
+  fractions: [0, 0.10, 0.25, 0.50, 0.75, 1.00],
+};
+
 export const PHYS = {
   g: 9.80665,
   dt: 1 / 720,          // 物理刻み [s](60fps 描画で 12 サブステップ)

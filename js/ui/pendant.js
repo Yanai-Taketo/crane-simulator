@@ -3,6 +3,7 @@
 export class PendantInput {
   constructor() {
     this.cmd = { travel: 0, traverse: 0, hoist: 0, step: 1 };
+    this.enabled = true;   // 運転室(レバー)モード中は false
     this.onEstop = null;
     this.onHook = null;
     this._shift = false;
@@ -50,6 +51,7 @@ export class PendantInput {
       if (e.key === 'Shift') { this._shift = true; this._refresh(); return; }
       if (e.code === 'KeyE') { this.onHook?.(); return; }
       if (e.code === 'Space') { e.preventDefault(); this.onEstop?.(); return; }
+      if (!this.enabled) return;   // 移動キーはペンダントモードのみ(E/Space は共通)
       const m = this._keyMap[e.code];
       if (m) { e.preventDefault(); this._keys[m[0]] = m[1]; this._refresh(); }
     });
@@ -68,7 +70,9 @@ export class PendantInput {
 
   _refresh() {
     for (const axis of ['travel', 'traverse', 'hoist']) {
-      this.cmd[axis] = this._pointer[axis] !== 0 ? this._pointer[axis] : this._keys[axis];
+      this.cmd[axis] = this.enabled
+        ? (this._pointer[axis] !== 0 ? this._pointer[axis] : this._keys[axis])
+        : 0;
     }
     this.cmd.step = this._shift ? 2 : 1;
     // ボタンの押下表示(キー操作でも点灯)

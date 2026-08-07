@@ -139,3 +139,41 @@ body {
   #swayscope-panel { transform: scale(0.8); transform-origin: bottom left; }
   #task-panel { right: 12px; top: auto; bottom: 12px; }
 }
+
+/* ---- 運転室コントローラー(ノッチレバー) ---- */
+#lever-panel {
+  right: 12px; top: 50%; transform: translateY(-50%);
+  padding: 12px 14px 8px;
+  background: linear-gradient(180deg, rgba(30,36,30,0.94), rgba(20,26,20,0.94));
+  border: 2px solid #3f5245;
+}
+#lever-levers { display: flex; gap: 14px; }
+.lever-col { display: flex; flex-direction: column; align-items: center; width: 64px; }
+.lever-top, .lever-bottom { font-size: 11px; font-weight: 700; color: var(--text-dim); padding: 2px 0; }
+.lever-track {
+  position: relative; width: 34px; height: 210px; margin: 2px 0;
+  background: linear-gradient(90deg, #12160f, #1d241a 50%, #12160f);
+  border: 1px solid #43503f; border-radius: 8px;
+  cursor: grab; touch-action: none;
+  display: flex; flex-direction: column; justify-content: space-between;
+  padding: 6px 0;
+}
+.lever-tick {
+  height: 1px; margin: 0 8px; background: rgba(160,180,150,0.45);
+}
+.lever-tick.zero { height: 3px; margin: 0 4px; background: var(--accent); border-radius: 2px; }
+.lever-knob {
+  position: absolute; left: 50%; transform: translate(-50%, -50%);
+  width: 46px; height: 26px; border-radius: 7px;
+  background: radial-gradient(circle at 35% 30%, #55617a, #333c4e 70%);
+  border: 2px solid #6a7890;
+  box-shadow: 0 3px 6px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.2);
+  display: flex; align-items: center; justify-content: center;
+  pointer-events: none;
+  transition: top 0.06s;
+}
+.lever-knob.active { border-color: var(--accent); }
+.lever-knob .lever-notch-label { font-size: 13px; font-weight: 800; color: var(--text); }
+.lever-name { font-size: 11px; font-weight: 700; margin-top: 4px; color: var(--text); }
+.lever-keys { margin-left: 5px; font-size: 10px; color: var(--text-dim); font-weight: 400; }
+.lever-hint { font-size: 10px; color: var(--text-dim); margin-top: 6px; text-align: center; line-height: 1.6; }
