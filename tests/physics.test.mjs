@@ -414,3 +414,67 @@ test('回帰: 横行南端はキャブ保護リミットで停止する', () => 
   assert.ok(sim.s[2] <= CRANE.traverseMax + 1e-9, `Y=${sim.s[2]}`);
   assert.ok(Math.abs(CRANE.traverseMax - 13.0) < 1e-9, 'キャブ保護リミット 13.0 m');
 });
+
+test('描画状態: 着床後の繰出しでフックが降下し荷上面に静置、ロープたるみ量が増加', () => {
+  const sim = new CraneSimulator({ loadMass: 1000 });
+  sim.placeLoad(8, 8);
+  // 玉掛け状態を直接構成し、着床させる
+  sim.attached = true;
+  sim.attachedLoadMass = 1000;
+  sim._syncParams();
+  sim.L = 5.0;
+  sim.s[4] = 8; sim.s[5] = 8;
+  sim.s[6] = GEOM.load.sz / 2 - (sim.p.mp * PHYS.g) / sim.p.kn;
+  sim.s[7] = sim.s[8] = sim.s[9] = 0;
+  sim._refreshAux();
+
+  // 繰り出し(巻下)を続ける
+  sim.setLevers({ hoist: -5 });
+  let prevHookZ = Infinity;
+  let sawDescent = false;
+  const restZ = GEOM.load.sz + GEOM.hookHalf;   // 静置フック中心高さ ≈ 1.35
+  let guard = 0;
+  while (sim.L < CRANE.ropeMax - 0.05 && guard++ < 20000) {
+    sim.step(1 / 60);
+    const rs = sim.getRenderState();
+    if (rs.hookPos.z < prevHookZ - 1e-4) sawDescent = true;
+    prevHookZ = rs.hookPos.z;
+  }
+  const rs = sim.getRenderState();
+  assert.ok(sawDescent, '繰出し中にフックが降下すること');
+  assert.ok(Math.abs(rs.hookPos.z - restZ) < 0.12, `フックが荷上面に静置 (z=${rs.hookPos.z} vs ${restZ})`);
+  assert.ok(rs.hookResting, 'hookResting フラグ');
+  assert.ok(rs.ropeSag > 0.3, `ロープたるみ量が明確に可視 (${rs.ropeSag} m)`);
+  assert.ok(rs.T < 10, `たるみ時の表示張力はほぼ零 (${rs.T} N)`);
+
+  // 巻上げると: たるみ解消 → フック吊持(張力≈フック自重)→ 吊上げ張力
+  sim.setLevers({ hoist: 5 });
+  guard = 0;
+  let sawHookWeight = false;
+  while (sim.getRenderState().loadOnGround && guard++ < 30000) {
+    sim.step(1 / 60);
+    const r = sim.getRenderState();
+    if (!r.hookResting && r.slack && Math.abs(r.T - 30 * PHYS.g) < 1) sawHookWeight = true;
+  }
+  assert.ok(sawHookWeight, 'フック吊持区間で表示張力がフック自重になること');
+  assert.ok(guard < 30000, '再吊上げで地切りできること');
+  const r2 = sim.getRenderState();
+  assert.ok(r2.ropeSag === 0, `吊上げ後はたるみ零 (${r2.ropeSag})`);
+  assert.ok(r2.T > 900 * PHYS.g, `吊上げ張力 (${r2.T})`);
+});
+
+test('描画状態: フック単独の巻下は下限リミットで停止しロープは張ったまま', () => {
+  const sim = new CraneSimulator({ loadMass: 1000 });
+  sim.setLevers({ hoist: -5 });
+  let guard = 0;
+  while (sim.L < CRANE.ropeMax - 0.001 && guard++ < 30000) sim.step(1 / 60);
+  sim.setLevers({ hoist: 0 });
+  for (let i = 0; i < 120; i++) sim.step(1 / 60);
+  const rs = sim.getRenderState();
+  // 下限リミット(巻下過巻防止)によりフックは床のわずか上で停止、ロープは張ったまま
+  assert.ok(Math.abs(sim.L - CRANE.ropeMax) < 1e-6, `L が下限リミットで停止 (${sim.L})`);
+  const bottom = rs.hookPos.z - GEOM.hookHalf;
+  assert.ok(bottom > 0 && bottom < 0.15, `フック下端は床のわずか上 (${bottom} m)`);
+  assert.equal(rs.ropeSag, 0, 'ロープは張ったまま(たるみなし)');
+  assert.ok(rs.T > 25 * PHYS.g && rs.T < 40 * PHYS.g, `張力 ≈ フック自重 (${rs.T} N)`);
+});

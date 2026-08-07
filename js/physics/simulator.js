@@ -276,19 +276,34 @@ export class CraneSimulator {
     const rx = s[4] - s[0], ry = s[5] - s[2], rz = s[6] - pivotH;
     const dist = Math.hypot(rx, ry, rz);
     const slack = this.aux.stretch < -0.01;
-    // フック描画位置: 玉掛け時は吊点→質点の線上(張り状態では巻出し長 L の位置、
-    // たるみ時は吊荷の rig 分上に連続的に接続)、単独時は質点そのもの
-    let hook;
+    // フック描画位置(玉掛け時):
+    //  - 吊上げ~フック吊持区間: ロープは張っており、吊点→質点の線上・巻出し長 L の点
+    //  - さらに繰り出すとフックは実機同様降下を続け、吊荷上面に静置される
+    //    (静置後はロープに余剰長が生じ、たるみとして描画される)
+    const rigUp = GEOM.load.sz / 2 + GEOM.hookHalf;  // 吊荷重心→静置フック中心
+    let hook, hookResting = false;
     if (this.attached) {
       if (dist > 1e-6) {
-        const f = Math.min(this.L, Math.max(0.15, dist - this.p.rig)) / dist;
-        hook = { x: s[0] + rx * f, y: s[2] + ry * f, z: pivotH + rz * f };
+        const restDist = Math.max(0.3, dist - rigUp); // フックが荷上面に着く繰出し長
+        const fLine = Math.min(this.L, restDist) / dist;
+        const lineX = s[0] + rx * fLine, lineY = s[2] + ry * fLine, lineZ = pivotH + rz * fLine;
+        const restX = s[4], restY = s[5], restZ = s[6] + rigUp;
+        // 静置遷移は 0.15 m の区間で連続補間(吊点オフセット時の飛びを防止)
+        const b = clamp((this.L - (restDist - 0.15)) / 0.15, 0, 1);
+        hook = { x: lineX + (restX - lineX) * b, y: lineY + (restY - lineY) * b, z: lineZ + (restZ - lineZ) * b };
+        hookResting = this.L >= restDist;
       } else {
         hook = { x: s[0], y: s[2], z: pivotH - this.L };
       }
     } else {
       hook = { x: s[4], y: s[5], z: s[6] };
     }
+    // ロープ余剰長 → 物理たるみ量(放物線近似: excess = 8a²/(3d) → a = √(3·d·excess/8))
+    const chord = Math.hypot(hook.x - s[0], hook.y - s[2], hook.z - pivotH);
+    const excess = Math.max(0, this.L - chord);
+    const ropeSag = (excess > 0.005 && chord > 0.2)
+      ? Math.min(0.45 * chord, Math.sqrt(3 * chord * excess / 8))
+      : 0;
     const load = this.attached
       ? { x: s[4], y: s[5], z: s[6] }
       : { x: this.loadStatic.x, y: this.loadStatic.y, z: GEOM.load.sz / 2 };
@@ -307,6 +322,11 @@ export class CraneSimulator {
     if (this.attached && this.aux.T > (CRANE.ratedLoad + CRANE.mHook) * PHYS.g * 1.1)
       warnings.push({ level: 'danger', text: '過負荷! 定格荷重を超えています' });
 
+    // 表示張力: スリングがたるみフックのみロープに吊持されている区間は
+    // ウインチ側張力 ≈ フック自重(点質量モデルでは 0 になるため補正)
+    let Tdisp = this.aux.T;
+    if (this.attached && slack && !hookResting && Tdisp < 5) Tdisp = CRANE.mHook * PHYS.g;
+
     return {
       X: s[0], Y: s[2],
       ropeLen: this.L,
@@ -316,7 +336,9 @@ export class CraneSimulator {
       loadOnGround: this.attached ? grounded : true,
       loadYaw: this.attached ? 0 : this.loadStatic.yaw,
       slack,
-      T: this.aux.T,
+      ropeSag,
+      hookResting,
+      T: Tdisp,
       loadMass: this.attached ? this.attachedLoadMass : this.loadMass,
       sway: { angle: swayAngle, amp: horiz },
       speeds: { travel: s[1], traverse: s[3], hoist: -this.dL, loadVz: s[9] },

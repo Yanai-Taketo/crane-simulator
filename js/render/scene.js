@@ -247,7 +247,7 @@ export class SceneManager {
 
     // ---- ワイヤロープ(4本掛けを2本で表現) ----
     this.ropeGeo = new THREE.BufferGeometry();
-    this.ropePos = new Float32Array(2 * 12 * 3); // 2本 × 12セグメント点
+    this.ropePos = new Float32Array(2 * 16 * 3); // 2本 × 8セグメント × 2端点
     this.ropeGeo.setAttribute('position', new THREE.BufferAttribute(this.ropePos, 3));
     this.rope = new THREE.LineSegments(this.ropeGeo, new THREE.LineBasicMaterial({ color: COL.rope }));
     this.rope.frustumCulled = false;
@@ -439,13 +439,16 @@ export class SceneManager {
     }
     this.scene.add(this.loadMesh);
 
-    // 玉掛けワイヤ(4本)
+    // 玉掛けワイヤ(4本・たるみ弧付き 5 セグメント描画)
     this.slingGeo = new THREE.BufferGeometry();
-    this.slingPos = new Float32Array(4 * 2 * 3);
+    this.slingPos = new Float32Array(4 * 5 * 2 * 3);
     this.slingGeo.setAttribute('position', new THREE.BufferAttribute(this.slingPos, 3));
     this.slings = new THREE.LineSegments(this.slingGeo, new THREE.LineBasicMaterial({ color: COL.sling }));
     this.slings.frustumCulled = false;
     this.scene.add(this.slings);
+    // スリング張り切り長(フック下端→荷上面コーナー)
+    const cornerOff = Math.hypot(GEOM.load.sx * 0.45, GEOM.load.sy * 0.45);
+    this.slingTaut = Math.hypot(GEOM.slingLen, cornerOff);
   }
 
   _buildTrail() {
@@ -521,7 +524,8 @@ export class SceneManager {
       this.hookBlock.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), up);
     }
 
-    // ワイヤロープ描画(2本掛け、たるみは2次曲線で表現)
+    // ワイヤロープ描画(2本掛け)。たるみは余剰長から求めた物理たるみ量
+    // rs.ropeSag を弦と直交する水平方向に膨らませて表現(2 本は左右へ開く)
     const pivotY = GEOM.pivotH;
     let k = 0;
     for (const off of [-0.16, 0.16]) {
@@ -529,14 +533,20 @@ export class SceneManager {
       const bx = this.hookBlock.position.x + off * 0.6,
             by = this.hookBlock.position.y + 0.25,
             bz = this.hookBlock.position.z;
-      const sag = rs.slack ? Math.min(1.2, rs.ropeLen * 0.06) : 0;
-      const segs = 6;
+      // 弦に直交する水平単位ベクトル(弦が鉛直に近い場合は x 方向)
+      const cx = bx - ax, cy = by - ay, cz = bz - az;
+      let pxn = cz, pzn = -cx;                    // (c × ŷ) の水平成分
+      const pl = Math.hypot(pxn, pzn);
+      if (pl > 1e-6) { pxn /= pl; pzn /= pl; } else { pxn = 1; pzn = 0; }
+      const side = off < 0 ? -1 : 1;
+      const sag = rs.ropeSag || 0;
+      const segs = 8;
       for (let i = 0; i < segs; i++) {
         for (const t of [i / segs, (i + 1) / segs]) {
-          const px = ax + (bx - ax) * t;
-          const py = ay + (by - ay) * t - sag * 4 * t * (1 - t);
-          const pz = az + (bz - az) * t;
-          this.ropePos[k++] = px; this.ropePos[k++] = py; this.ropePos[k++] = pz;
+          const bow = sag * 4 * t * (1 - t);
+          this.ropePos[k++] = ax + cx * t + pxn * side * bow;
+          this.ropePos[k++] = ay + cy * t - bow * 0.35;   // 自重によるわずかな下方成分
+          this.ropePos[k++] = az + cz * t + pzn * side * bow;
         }
       }
     }
@@ -555,11 +565,24 @@ export class SceneManager {
       let s = 0;
       const corners = [[-1, -1], [-1, 1], [1, -1], [1, 1]];
       for (const [cx, cz] of corners) {
-        this.slingPos[s++] = hp.x; this.slingPos[s++] = hp.y - 0.45; this.slingPos[s++] = hp.z;
+        // 始点: フック下端 / 終点: 吊荷上面コーナー
+        const sx0 = hp.x, sy0 = hp.y - 0.45, sz0 = hp.z;
         this._tmpV2.set(cx * load.sx * 0.45, load.sz * 0.5, cz * load.sy * 0.45)
           .applyQuaternion(this.loadMesh.quaternion)
           .add(this.loadMesh.position);
-        this.slingPos[s++] = this._tmpV2.x; this.slingPos[s++] = this._tmpV2.y; this.slingPos[s++] = this._tmpV2.z;
+        const ex = this._tmpV2.x, ey = this._tmpV2.y, ez = this._tmpV2.z;
+        // 弦長と張り切り長からたるみ量(放物線近似)を求め下方に弧を描く
+        const c = Math.hypot(ex - sx0, ey - sy0, ez - sz0);
+        const slackLen = Math.max(0, this.slingTaut - c);
+        const sag = slackLen > 0.005 ? Math.min(0.4 * this.slingTaut, Math.sqrt(3 * Math.max(0.05, c) * slackLen / 8)) : 0;
+        const segs = 5;
+        for (let i = 0; i < segs; i++) {
+          for (const t of [i / segs, (i + 1) / segs]) {
+            this.slingPos[s++] = sx0 + (ex - sx0) * t;
+            this.slingPos[s++] = sy0 + (ey - sy0) * t - sag * 4 * t * (1 - t);
+            this.slingPos[s++] = sz0 + (ez - sz0) * t;
+          }
+        }
       }
       this.slingGeo.attributes.position.needsUpdate = true;
     } else {
