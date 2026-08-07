@@ -478,3 +478,43 @@ test('描画状態: フック単独の巻下は下限リミットで停止しロ
   assert.equal(rs.ropeSag, 0, 'ロープは張ったまま(たるみなし)');
   assert.ok(rs.T > 25 * PHYS.g && rs.T < 40 * PHYS.g, `張力 ≈ フック自重 (${rs.T} N)`);
 });
+
+test('回帰: たるみ静置状態で玉外ししてもフックは荷の上に留まる(瞬間移動・貫通なし)', () => {
+  const sim = new CraneSimulator({ loadMass: 1000 });
+  sim.placeLoad(8, 8);
+  sim.attached = true;
+  sim.attachedLoadMass = 1000;
+  sim._syncParams();
+  sim.L = 5.0;
+  sim.s[4] = 8; sim.s[5] = 8;
+  sim.s[6] = GEOM.load.sz / 2 - (sim.p.mp * PHYS.g) / sim.p.kn;
+  sim.s[7] = sim.s[8] = sim.s[9] = 0;
+  sim._refreshAux();
+  // 全繰出し → フック静置
+  sim.setLevers({ hoist: -5 });
+  let guard = 0;
+  while (sim.L < CRANE.ropeMax - 0.001 && guard++ < 20000) sim.step(1 / 60);
+  sim.setLevers({ hoist: 0 });
+  for (let i = 0; i < 60; i++) sim.step(1 / 60);
+  const before = sim.getRenderState().hookPos;
+  assert.ok(sim.getRenderState().hookResting, '前提: フック静置');
+
+  const r = sim.tryToggleHook();
+  assert.ok(r.ok, `玉外し: ${r.msg}`);
+  const after = sim.getRenderState().hookPos;
+  const jump = Math.hypot(after.x - before.x, after.y - before.y, after.z - before.z);
+  assert.ok(jump < 0.05, `玉外し時のフック位置跳び ${jump} m`);
+
+  // 2 秒静定後もフックは荷の上(荷上面 0.9 + フック半高 0.45 ≈ 1.35)に留まる
+  for (let i = 0; i < 120; i++) sim.step(1 / 60);
+  const settled = sim.getRenderState().hookPos;
+  assert.ok(Math.abs(settled.z - (GEOM.load.sz + GEOM.hookHalf)) < 0.08,
+    `フックが荷の上に静置され続ける (z=${settled.z})`);
+  // 荷の内部 (z < 0.9) に沈まないこと
+  assert.ok(settled.z - GEOM.hookHalf > GEOM.load.sz - 0.05, '荷を貫通しないこと');
+
+  // 巻上げれば(たるみ 0.85 m を巻き取った後)持ち上がる
+  sim.setLevers({ hoist: 5 });
+  for (let i = 0; i < 60 * 12; i++) sim.step(1 / 60);
+  assert.ok(sim.getRenderState().hookPos.z > 2.2, `巻上でフックが上昇 (z=${sim.getRenderState().hookPos.z})`);
+});

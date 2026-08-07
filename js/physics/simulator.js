@@ -67,10 +67,47 @@ export class CraneSimulator {
       mu: PHYS.muGround,
       // 質点から吊り体底面までの距離(玉掛け時 = 吊荷重心→吊荷底面)
       bottomOff: this.attached ? GEOM.load.sz / 2 : GEOM.hookHalf,
+      // フック単独時: 置かれている吊荷の上面も支持面(フックを荷の上に静置可能)
+      block: this.attached ? null : {
+        x: this.loadStatic.x, y: this.loadStatic.y,
+        halfX: GEOM.load.sx / 2, halfY: GEOM.load.sy / 2, top: GEOM.load.sz,
+      },
       rhoAir: PHYS.rhoAir,
       CdA: this.attached ? PHYS.dragCdA : 0.15,
       cLin: 0.6,
       rig,
+    };
+  }
+
+  // フックの描画位置(玉掛け時)。物理と整合する規則:
+  //  - チェーン(ロープ+スリング)が張っている間: 吊点→質点の線上・距離 L
+  //  - チェーンたるみ時: ロープはフックを吊持し、静置位置(吊荷上面)へ向かう
+  //    半直線上の距離 L の点。ロープ弦長 ≥ 静置点距離 になったらフックは
+  //    荷の上に静置され、以降の繰出しはロープのたるみになる
+  _hookRenderPos() {
+    const s = this.s;
+    const pivotH = GEOM.pivotH;
+    const rigUp = GEOM.load.sz / 2 + GEOM.hookHalf;  // 吊荷重心→静置フック中心
+    if (!this.attached) {
+      return { hook: { x: s[4], y: s[5], z: s[6] }, hookResting: false };
+    }
+    const rx = s[4] - s[0], ry = s[5] - s[2], rz = s[6] - pivotH;
+    const dist = Math.hypot(rx, ry, rz);
+    if (dist <= 1e-6) {
+      return { hook: { x: s[0], y: s[2], z: pivotH - this.L }, hookResting: false };
+    }
+    if (this.aux.stretch > -0.02) {
+      // チェーン張り(吊持・吊上げ・横引き)
+      const f = this.L / dist;
+      return { hook: { x: s[0] + rx * f, y: s[2] + ry * f, z: pivotH + rz * f }, hookResting: false };
+    }
+    // チェーンたるみ: 静置点へ向かう半直線上、距離 min(L, 静置点弦長)
+    const cRx = s[4] - s[0], cRy = s[5] - s[2], cRz = s[6] + rigUp - pivotH;
+    const chordRest = Math.hypot(cRx, cRy, cRz);
+    const f = Math.min(this.L, chordRest) / Math.max(1e-6, chordRest);
+    return {
+      hook: { x: s[0] + cRx * f, y: s[2] + cRy * f, z: pivotH + cRz * f },
+      hookResting: this.L >= chordRest - 1e-6,
     };
   }
 
@@ -142,12 +179,11 @@ export class CraneSimulator {
       if (!grounded) return { ok: false, attached: true, msg: '吊荷が接地していません。着床させてから外してください' };
       if (speed > 0.15) return { ok: false, attached: true, msg: '吊荷が動いています。静止させてから外してください' };
       if (this.aux.T > 0.3 * this.p.mp * PHYS.g) return { ok: false, attached: true, msg: 'ロープが張っています。巻下げて緩めてから外してください' };
-      // 吊荷を置き、フックを玉掛け前の位置(スリング上端相当)へ
+      // 吊荷を置き、フック(以後の質点)は現在の描画位置に据える。
+      // たるみ静置中なら荷の上にそのまま残る(荷上面は支持面として機能)
+      const hp = this._hookRenderPos().hook;
       this.loadStatic = { x: s[4], y: s[5], yaw: 0 };
-      const rig = this.p.rig;
-      const rx = s[0] - s[4], ry = s[2] - s[5], rz = GEOM.pivotH - s[6];
-      const d = Math.hypot(rx, ry, rz) || 1;
-      s[4] += (rx / d) * rig; s[5] += (ry / d) * rig; s[6] += (rz / d) * rig;
+      s[4] = hp.x; s[5] = hp.y; s[6] = hp.z;
       s[7] = 0; s[8] = 0; s[9] = 0;
       this.attached = false;
       this._syncParams();
@@ -276,28 +312,7 @@ export class CraneSimulator {
     const rx = s[4] - s[0], ry = s[5] - s[2], rz = s[6] - pivotH;
     const dist = Math.hypot(rx, ry, rz);
     const slack = this.aux.stretch < -0.01;
-    // フック描画位置(玉掛け時):
-    //  - 吊上げ~フック吊持区間: ロープは張っており、吊点→質点の線上・巻出し長 L の点
-    //  - さらに繰り出すとフックは実機同様降下を続け、吊荷上面に静置される
-    //    (静置後はロープに余剰長が生じ、たるみとして描画される)
-    const rigUp = GEOM.load.sz / 2 + GEOM.hookHalf;  // 吊荷重心→静置フック中心
-    let hook, hookResting = false;
-    if (this.attached) {
-      if (dist > 1e-6) {
-        const restDist = Math.max(0.3, dist - rigUp); // フックが荷上面に着く繰出し長
-        const fLine = Math.min(this.L, restDist) / dist;
-        const lineX = s[0] + rx * fLine, lineY = s[2] + ry * fLine, lineZ = pivotH + rz * fLine;
-        const restX = s[4], restY = s[5], restZ = s[6] + rigUp;
-        // 静置遷移は 0.15 m の区間で連続補間(吊点オフセット時の飛びを防止)
-        const b = clamp((this.L - (restDist - 0.15)) / 0.15, 0, 1);
-        hook = { x: lineX + (restX - lineX) * b, y: lineY + (restY - lineY) * b, z: lineZ + (restZ - lineZ) * b };
-        hookResting = this.L >= restDist;
-      } else {
-        hook = { x: s[0], y: s[2], z: pivotH - this.L };
-      }
-    } else {
-      hook = { x: s[4], y: s[5], z: s[6] };
-    }
+    const { hook, hookResting } = this._hookRenderPos();
     // ロープ余剰長 → 物理たるみ量(放物線近似: excess = 8a²/(3d) → a = √(3·d·excess/8))
     const chord = Math.hypot(hook.x - s[0], hook.y - s[2], hook.z - pivotH);
     const excess = Math.max(0, this.L - chord);
@@ -322,10 +337,10 @@ export class CraneSimulator {
     if (this.attached && this.aux.T > (CRANE.ratedLoad + CRANE.mHook) * PHYS.g * 1.1)
       warnings.push({ level: 'danger', text: '過負荷! 定格荷重を超えています' });
 
-    // 表示張力: スリングがたるみフックのみロープに吊持されている区間は
-    // ウインチ側張力 ≈ フック自重(点質量モデルでは 0 になるため補正)
+    // 表示張力: フックが静置されていない限りウインチ側は常に少なくとも
+    // フック自重を担っている(点質量モデルの表示補正・張り切り時のちらつき防止)
     let Tdisp = this.aux.T;
-    if (this.attached && slack && !hookResting && Tdisp < 5) Tdisp = CRANE.mHook * PHYS.g;
+    if (this.attached && !hookResting) Tdisp = Math.max(Tdisp, CRANE.mHook * PHYS.g);
 
     return {
       X: s[0], Y: s[2],

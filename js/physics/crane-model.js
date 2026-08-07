@@ -50,8 +50,16 @@ export function rhsCartesian(t, s, u, p, out, aux = null) {
   if (FdrvY > p.FmaxY) FdrvY = p.FmaxY; else if (FdrvY < -p.FmaxY) FdrvY = -p.FmaxY;
 
   // 地面接触(ペナルティ法: 反発ほぼ零・正則化クーロン摩擦)
+  // p.block があれば、置かれた吊荷の上面もフックの支持面として扱う
+  // (フック単独時に荷の上に静置できる。側面衝突は簡略化のため省略)
+  let groundZ = 0;
+  if (p.block &&
+      Math.abs(px - p.block.x) < p.block.halfX &&
+      Math.abs(py - p.block.y) < p.block.halfY) {
+    groundZ = p.block.top;
+  }
   let Nz = 0, Ffx = 0, Ffy = 0;
-  const zBot = pz - p.bottomOff;
+  const zBot = pz - p.bottomOff - groundZ;
   if (zBot < 0) {
     Nz = -p.kn * zBot - p.cn * vz;
     if (Nz < 0) Nz = 0;

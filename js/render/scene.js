@@ -54,6 +54,9 @@ export class SceneManager {
     this.cameraMode = 'orbit'; // orbit | operator | follow | cab
     this._tmpV = new THREE.Vector3();
     this._tmpV2 = new THREE.Vector3();
+    this._tmpQ = new THREE.Quaternion();
+    this._UP = new THREE.Vector3(0, 1, 0);
+    this._hookSmooth = null;   // フック描画位置の平滑化(1フレーム跳びの吸収)
 
     // 運転席視点のマウスルック(ヨー・ピッチ)
     this.cabYaw = 0;          // 0 = 北向き(ガーダ沿い・反対側ランウェイ方向)
@@ -504,7 +507,12 @@ export class SceneManager {
 
   setTrailVisible(v) {
     this.trail.visible = v;
-    if (!v) { this.trailCount = 0; this.trailGeo.setDrawRange(0, 0); }
+    if (!v) this.clearTrail();
+  }
+
+  clearTrail() {
+    this.trailCount = 0;
+    this.trailGeo.setDrawRange(0, 0);
   }
 
   // rs: シミュレータの描画状態
@@ -514,15 +522,25 @@ export class SceneManager {
     this.bridge.position.set(rs.X, 0, 0);
     this.trolley.position.set(rs.X, 0, rs.Y);
 
-    // フックブロック
+    // フックブロック(位置は短時定数で平滑化し、玉掛け/玉外し時の
+    // 1 フレーム跳びを数フレームの滑らかな移動に吸収する)
     toWorld(rs.hookPos.x, rs.hookPos.y, rs.hookPos.z, this._tmpV);
-    this.hookBlock.position.copy(this._tmpV);
-    // ロープ方向にフックを傾ける
-    this._tmpV2.set(rs.X, GEOM.pivotH, rs.Y).sub(this._tmpV);
-    if (this._tmpV2.lengthSq() > 1e-8) {
-      const up = this._tmpV2.normalize();
-      this.hookBlock.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), up);
+    if (!this._hookSmooth) this._hookSmooth = this._tmpV.clone();
+    this._hookSmooth.lerp(this._tmpV, 1 - Math.exp(-dtRender / 0.05));
+    this.hookBlock.position.copy(this._hookSmooth);
+    // フック姿勢: ロープが張っている時のみロープ方向に追従。
+    // 静置・たるみ時は直立(スラープで滑らかに遷移)
+    if (rs.hookResting || rs.ropeSag > 0.02) {
+      this._tmpQ.identity();
+    } else {
+      this._tmpV2.set(rs.X, GEOM.pivotH, rs.Y).sub(this._hookSmooth);
+      if (this._tmpV2.lengthSq() > 1e-8) {
+        this._tmpQ.setFromUnitVectors(this._UP, this._tmpV2.normalize());
+      } else {
+        this._tmpQ.identity();
+      }
     }
+    this.hookBlock.quaternion.slerp(this._tmpQ, 1 - Math.exp(-dtRender / 0.1));
 
     // ワイヤロープ描画(2本掛け)。たるみは余剰長から求めた物理たるみ量
     // rs.ropeSag を弦と直交する水平方向に膨らませて表現(2 本は左右へ開く)
@@ -538,6 +556,8 @@ export class SceneManager {
       let pxn = cz, pzn = -cx;                    // (c × ŷ) の水平成分
       const pl = Math.hypot(pxn, pzn);
       if (pl > 1e-6) { pxn /= pl; pzn /= pl; } else { pxn = 1; pzn = 0; }
+      // 弦の微小な向きの違いで 2 本が同方向へ倒れないよう向きを一意化
+      if (pxn < -1e-9 || (Math.abs(pxn) <= 1e-9 && pzn < 0)) { pxn = -pxn; pzn = -pzn; }
       const side = off < 0 ? -1 : 1;
       const sag = rs.ropeSag || 0;
       const segs = 8;
@@ -555,10 +575,15 @@ export class SceneManager {
     // 吊荷と玉掛けワイヤ
     toWorld(rs.loadPos.x, rs.loadPos.y, rs.loadPos.z, this._tmpV);
     this.loadMesh.position.copy(this._tmpV);
-    this.loadMesh.rotation.y = rs.loadYaw || 0;
+    // 吊荷姿勢: 空中でロープが張っている時のみロープに追従。
+    // 接地中・たるみ中は水平(床にめり込む傾き表示を防止)
+    if (rs.loadAttached && !rs.loadOnGround && !(rs.ropeSag > 0.02)) {
+      this._tmpQ.copy(this.hookBlock.quaternion);
+    } else {
+      this._tmpQ.identity();
+    }
+    this.loadMesh.quaternion.slerp(this._tmpQ, 1 - Math.exp(-dtRender / 0.12));
     if (rs.loadAttached) {
-      this.loadMesh.quaternion.copy(this.hookBlock.quaternion);
-      this.loadMesh.rotateY(rs.loadYaw || 0);
       this.slings.visible = true;
       const { load } = GEOM;
       const hp = this.hookBlock.position;
@@ -571,24 +596,27 @@ export class SceneManager {
           .applyQuaternion(this.loadMesh.quaternion)
           .add(this.loadMesh.position);
         const ex = this._tmpV2.x, ey = this._tmpV2.y, ez = this._tmpV2.z;
-        // 弦長と張り切り長からたるみ量(放物線近似)を求め下方に弧を描く
+        // 弦長と張り切り長からたるみ量(放物線近似)を計算。
+        // 弛みは荷の内部へ入らないよう「外側へ膨らむ」ドレープで描く
         const c = Math.hypot(ex - sx0, ey - sy0, ez - sz0);
         const slackLen = Math.max(0, this.slingTaut - c);
         const sag = slackLen > 0.005 ? Math.min(0.4 * this.slingTaut, Math.sqrt(3 * Math.max(0.05, c) * slackLen / 8)) : 0;
+        let ox = ex - this.loadMesh.position.x, oz = ez - this.loadMesh.position.z;
+        const ol = Math.hypot(ox, oz) || 1;
+        ox /= ol; oz /= ol;
         const segs = 5;
         for (let i = 0; i < segs; i++) {
           for (const t of [i / segs, (i + 1) / segs]) {
-            this.slingPos[s++] = sx0 + (ex - sx0) * t;
-            this.slingPos[s++] = sy0 + (ey - sy0) * t - sag * 4 * t * (1 - t);
-            this.slingPos[s++] = sz0 + (ez - sz0) * t;
+            const bow = sag * 4 * t * (1 - t);
+            this.slingPos[s++] = sx0 + (ex - sx0) * t + ox * bow * 0.85;
+            this.slingPos[s++] = sy0 + (ey - sy0) * t - bow * 0.25;
+            this.slingPos[s++] = sz0 + (ez - sz0) * t + oz * bow * 0.85;
           }
         }
       }
       this.slingGeo.attributes.position.needsUpdate = true;
     } else {
       this.slings.visible = false;
-      this.loadMesh.quaternion.identity();
-      this.loadMesh.rotation.y = rs.loadYaw || 0;
     }
 
     // 軌跡(リングバッファ満杯時はクリアして描き直し — 巻き戻り線分の防止)

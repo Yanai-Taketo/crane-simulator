@@ -114,6 +114,7 @@ $('btn-reset').addEventListener('click', () => {
   }
   sim.placeLoad(START_POS.x, START_POS.y);
   scope.reset();
+  scene.clearTrail();
   scene.setTrailVisible($('set-trails').checked);
   if (task.state !== 'idle') task.cancel();
   setActive(modeBtns, 'btn-mode-free');
@@ -143,6 +144,7 @@ scene.setZone('start', START_POS.x, START_POS.y, true);
 
 // ---- メインループ(物理は固定刻み・シミュレータ内部でサブステップ) ----
 let last = performance.now();
+let lastSimTime = 0;
 let hudAccum = 0;
 function frame(now) {
   requestAnimationFrame(frame);
@@ -154,7 +156,10 @@ function frame(now) {
 
   const rs = sim.getRenderState();
   scene.update(rs, dt);
-  task.update(rs, slowmo ? dt * 0.25 : dt);
+  // 課題の計時はシミュレーション時刻に同期(描画レートの影響を受けない)
+  const simDt = Math.max(0, sim.time - lastSimTime);
+  lastSimTime = sim.time;
+  task.update(rs, simDt);
 
   hudAccum += dt;
   if (hudAccum >= 1 / 15) {   // HUD・スコープは 15Hz で十分
