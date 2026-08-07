@@ -55,6 +55,7 @@ export class SceneManager {
     this._tmpV = new THREE.Vector3();
     this._tmpV2 = new THREE.Vector3();
     this._tmpQ = new THREE.Quaternion();
+    this._tmpQ2 = new THREE.Quaternion();
     this._UP = new THREE.Vector3(0, 1, 0);
     this._hookSmooth = null;   // フック描画位置の平滑化(1フレーム跳びの吸収)
 
@@ -575,12 +576,22 @@ export class SceneManager {
     // 吊荷と玉掛けワイヤ
     toWorld(rs.loadPos.x, rs.loadPos.y, rs.loadPos.z, this._tmpV);
     this.loadMesh.position.copy(this._tmpV);
-    // 吊荷姿勢: 空中でロープが張っている時のみロープに追従。
-    // 接地中・たるみ中は水平(床にめり込む傾き表示を防止)
+    // 吊荷姿勢 = チェーン追従(空中・張り時) × ヨー回転 × 偏心傾き
+    // 接地中は水平+ヨーのみ(床にめり込む傾き表示を防止)
     if (rs.loadAttached && !rs.loadOnGround && !(rs.ropeSag > 0.02)) {
       this._tmpQ.copy(this.hookBlock.quaternion);
     } else {
       this._tmpQ.identity();
+    }
+    if (rs.loadYaw) {
+      this._tmpQ2.setFromAxisAngle(this._UP, -rs.loadYaw);   // 物理 z 軸ヨー → three −Y
+      this._tmpQ.multiply(this._tmpQ2);
+    }
+    if (rs.loadTilt && rs.loadTilt.angle > 1e-4) {
+      // 偏心方向の側が下がる傾き(axis = up × dir)
+      this._tmpV2.set(rs.loadTilt.dirY, 0, -rs.loadTilt.dirX);
+      this._tmpQ2.setFromAxisAngle(this._tmpV2.normalize(), rs.loadTilt.angle);
+      this._tmpQ.multiply(this._tmpQ2);
     }
     this.loadMesh.quaternion.slerp(this._tmpQ, 1 - Math.exp(-dtRender / 0.12));
     if (rs.loadAttached) {

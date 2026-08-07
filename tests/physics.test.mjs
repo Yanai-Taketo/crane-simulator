@@ -9,6 +9,24 @@ import { GEOM, CRANE, PHYS, NOTCH } from '../js/physics/params.js';
 
 const g = PHYS.g;
 
+// v2: 吊持状態(吊荷を吊点直下に吊持・静的伸び込み)を直接構成するヘルパ
+function rigAttached(sim, L = 4) {
+  sim.attached = true;
+  sim.attachedLoadMass = sim.loadMass;
+  sim.attachedCgOff = { x: 0, y: 0 };
+  sim.L = L;
+  sim._syncParams();
+  const s = sim.s;
+  const stR = (CRANE.mHook + sim.attachedLoadMass) * PHYS.g / sim.p.kRope;
+  const stC = sim.attachedLoadMass * PHYS.g / sim.p.kChain;
+  s[4] = s[0]; s[5] = s[2]; s[6] = GEOM.pivotH - L - stR;
+  s[7] = s[8] = s[9] = 0;
+  s[10] = s[0]; s[11] = s[2]; s[12] = s[6] - 2.0 - stC;
+  s[13] = s[14] = s[15] = 0; s[16] = 0; s[17] = 0;
+  sim._refreshAux();
+}
+
+
 // 散逸・駆動なしの理想パラメータ(保存則検証用)
 function idealParams(over = {}) {
   return {
@@ -228,12 +246,7 @@ test('シミュレータ統合: 走行指令で定格速度に到達し停止後
   const sim = new CraneSimulator({ loadMass: 1000 });
   sim.placeLoad(8, 8);
   // 玉掛け状態を直接構成(吊荷を吊点直下に吊持)
-  sim.attached = true;
-  sim._syncParams();
-  sim.L = 4;
-  sim.s[4] = sim.s[0]; sim.s[5] = sim.s[2];
-  sim.s[6] = GEOM.pivotH - (sim.L + sim.p.rig) - sim.p.mp * PHYS.g / sim.p.kRope;
-  sim.s[7] = sim.s[8] = sim.s[9] = 0;
+  rigAttached(sim, 4);
 
   sim.setCommand({ travel: 1, traverse: 0, hoist: 0, step: 2 });
   for (let i = 0; i < 60 * 8; i++) sim.step(1 / 60);
@@ -418,15 +431,8 @@ test('回帰: 横行南端はキャブ保護リミットで停止する', () => 
 test('描画状態: 着床後の繰出しでフックが降下し荷上面に静置、ロープたるみ量が増加', () => {
   const sim = new CraneSimulator({ loadMass: 1000 });
   sim.placeLoad(8, 8);
-  // 玉掛け状態を直接構成し、着床させる
-  sim.attached = true;
-  sim.attachedLoadMass = 1000;
-  sim._syncParams();
-  sim.L = 5.0;
-  sim.s[4] = 8; sim.s[5] = 8;
-  sim.s[6] = GEOM.load.sz / 2 - (sim.p.mp * PHYS.g) / sim.p.kn;
-  sim.s[7] = sim.s[8] = sim.s[9] = 0;
-  sim._refreshAux();
+  // 玉掛け状態を直接構成(空中吊持から着床・繰出しへ)
+  rigAttached(sim, 5.0);
 
   // 繰り出し(巻下)を続ける
   sim.setLevers({ hoist: -5 });
@@ -454,7 +460,8 @@ test('描画状態: 着床後の繰出しでフックが降下し荷上面に静
   while (sim.getRenderState().loadOnGround && guard++ < 30000) {
     sim.step(1 / 60);
     const r = sim.getRenderState();
-    if (!r.hookResting && r.slack && Math.abs(r.T - 30 * PHYS.g) < 1) sawHookWeight = true;
+    // v2: フックのみ吊持 = ロープ張り(実張力 ≈ フック自重)かつチェーン弛み(Tc≈0)
+    if (!r.hookResting && r.Tc < 5 && Math.abs(r.T - 30 * PHYS.g) < 30) sawHookWeight = true;
   }
   assert.ok(sawHookWeight, 'フック吊持区間で表示張力がフック自重になること');
   assert.ok(guard < 30000, '再吊上げで地切りできること');
@@ -482,14 +489,7 @@ test('描画状態: フック単独の巻下は下限リミットで停止しロ
 test('回帰: たるみ静置状態で玉外ししてもフックは荷の上に留まる(瞬間移動・貫通なし)', () => {
   const sim = new CraneSimulator({ loadMass: 1000 });
   sim.placeLoad(8, 8);
-  sim.attached = true;
-  sim.attachedLoadMass = 1000;
-  sim._syncParams();
-  sim.L = 5.0;
-  sim.s[4] = 8; sim.s[5] = 8;
-  sim.s[6] = GEOM.load.sz / 2 - (sim.p.mp * PHYS.g) / sim.p.kn;
-  sim.s[7] = sim.s[8] = sim.s[9] = 0;
-  sim._refreshAux();
+  rigAttached(sim, 5.0);
   // 全繰出し → フック静置
   sim.setLevers({ hoist: -5 });
   let guard = 0;
