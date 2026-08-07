@@ -86,15 +86,28 @@ export class CraneSimulator {
 
   setCommand(cmd) { this.cmd = cmd; this.controlMode = 'pendant'; }
 
-  // 運転室モード: ノッチ式コントローラー(検出位置保持・段付きレバー)
+  // 運転室モード: ノッチ式コントローラー(ディテント保持・段付きレバー)
+  // 3 動作同時投入は禁止(走行+横行の斜行など 2 動作までは可)。
+  // 3 本目のレバー投入は拒否し blocked にその軸名を返す。
   setLevers(n) {
     const c = NOTCH.count;
-    this.notches = {
+    const next = {
       travel: clamp(Math.round(n.travel ?? this.notches.travel), -c, c),
       traverse: clamp(Math.round(n.traverse ?? this.notches.traverse), -c, c),
       hoist: clamp(Math.round(n.hoist ?? this.notches.hoist), -c, c),
     };
+    let blocked = null;
+    const axes = ['travel', 'traverse', 'hoist'];
+    const activeCount = axes.filter(a => next[a] !== 0).length;
+    if (activeCount >= 3) {
+      // 新規に投入された(0 → 非0)軸を拒否する
+      for (const a of axes) {
+        if (this.notches[a] === 0 && next[a] !== 0) { next[a] = 0; blocked = a; }
+      }
+    }
+    this.notches = next;
     this.controlMode = 'lever';
+    return { blocked };
   }
 
   // 全操作が中立(ゼロノッチ)か — 非常停止復帰インターロックに使用

@@ -5,14 +5,19 @@
 import { NOTCH } from '../physics/params.js';
 
 export class LeverPanel {
-  // axes: [{ key, label, upLabel, downLabel, keys: '←→' }]  表示順 = 実機配置
+  // axes: [{ key, label, upLabel, downLabel, keys, forwardSign }]  表示順 = 実機配置
+  // forwardSign: レバー前方(画面上方)へ押した時のノッチ符号(実機の前後規約を再現)
   constructor(container, axes, onChange) {
     this.container = container;
     this.axes = axes;
     this.onChange = onChange;
     this.notches = {};
     this.els = {};
-    for (const ax of axes) this.notches[ax.key] = 0;
+    this.signs = {};
+    for (const ax of axes) {
+      this.notches[ax.key] = 0;
+      this.signs[ax.key] = ax.forwardSign ?? 1;
+    }
     this._build();
   }
 
@@ -45,9 +50,9 @@ export class LeverPanel {
     const N = NOTCH.count;
     const move = (e) => {
       const r = track.getBoundingClientRect();
-      const frac = (e.clientY - r.top) / r.height;        // 0(上)〜1(下)
-      const n = Math.round((0.5 - frac) * 2 * N);          // 上 = +N
-      this.set(key, n);
+      const frac = (e.clientY - r.top) / r.height;        // 0(上=前方)〜1(下=手前)
+      const sv = Math.round((0.5 - frac) * 2 * N);
+      this.set(key, this.signs[key] * sv);
     };
     track.addEventListener('pointerdown', (e) => {
       e.preventDefault();
@@ -86,8 +91,9 @@ export class LeverPanel {
   _render(key) {
     const N = NOTCH.count;
     const n = this.notches[key];
+    const sv = n * this.signs[key];   // 画面上の変位(上 = 前方押し)
     const { knob, label } = this.els[key];
-    knob.style.top = `${(0.5 - n / (2 * N)) * 100}%`;
+    knob.style.top = `${(0.5 - sv / (2 * N)) * 100}%`;
     label.textContent = String(Math.abs(n));
     knob.classList.toggle('active', n !== 0);
   }

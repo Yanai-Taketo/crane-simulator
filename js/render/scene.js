@@ -3,7 +3,7 @@
 // Three.js 座標系: y-up。マッピングは toWorld() に集約する。
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { GEOM } from '../physics/params.js';
+import { GEOM, CAB } from '../physics/params.js';
 
 const toWorld = (x, y, z, out = new THREE.Vector3()) => out.set(x, z, y);
 
@@ -51,13 +51,19 @@ export class SceneManager {
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.08;
 
-    this.cameraMode = 'orbit'; // orbit | operator | follow
+    this.cameraMode = 'orbit'; // orbit | operator | follow | cab
     this._tmpV = new THREE.Vector3();
     this._tmpV2 = new THREE.Vector3();
+
+    // 運転席視点のマウスルック(ヨー・ピッチ)
+    this.cabYaw = 0;          // 0 = 北向き(ガーダ沿い・反対側ランウェイ方向)
+    this.cabPitch = -0.5;     // やや下向き(吊荷注視)
+    this._bindCabLook(canvas);
 
     this._buildLights();
     this._buildFactory();
     this._buildCrane();
+    this._buildCab();
     this._buildLoad();
     this._buildTrail();
     this._buildZones();
@@ -265,6 +271,155 @@ export class SceneManager {
     this.scene.add(this.hookBlock);
   }
 
+  // 運転室(キャブ): ガーダ端部吊下げ形。ブリッジと共に走行する。
+  // 実機調査に基づく: 密閉鋼製・前面+側面ガラス・グリッド付き床窓・
+  // 着座はガーダ軸沿いに反対側ランウェイ(北)向き。
+  _buildCab() {
+    const g = new THREE.Group();
+    const W = CAB.sx, D = CAB.sy, H = CAB.h;
+    const fz = CAB.floorZ;                       // 床面高さ(ワールド y)
+    const steel = new THREE.MeshStandardMaterial({ color: 0x5a7d5a, roughness: 0.6, metalness: 0.3 });
+    const steelIn = new THREE.MeshStandardMaterial({ color: 0x9db4a0, roughness: 0.85, side: THREE.DoubleSide });
+
+    // キャブ内照明(天井灯)
+    const cabLight = new THREE.PointLight(0xfff2dc, 5.5, 5.5, 1.6);
+    cabLight.position.set(0, CAB.floorZ + CAB.h - 0.15, CAB.y);
+    g.add(cabLight);
+    const glass = new THREE.MeshBasicMaterial({ color: 0x9fc4de, transparent: true, opacity: 0.16, side: THREE.DoubleSide, depthWrite: false });
+    const frameMat = new THREE.MeshStandardMaterial({ color: 0x3c4a3e, roughness: 0.5, metalness: 0.4 });
+
+    // 吊り金具(ガーダ下面へ 2 本)
+    const hangerGeo = new THREE.BoxGeometry(0.12, GEOM.railH + 0.85 - (fz + H), 0.12);
+    for (const dx of [-W * 0.35, W * 0.35]) {
+      const hg = new THREE.Mesh(hangerGeo, steel);
+      hg.position.set(dx, (GEOM.railH + 0.85 + fz + H) / 2, CAB.y);
+      g.add(hg);
+    }
+
+    // 床(前方に床窓の開口: 前半分に窓、後半分は鋼板)
+    const floorBack = new THREE.Mesh(new THREE.BoxGeometry(W, 0.08, D * 0.55), steel);
+    floorBack.position.set(0, fz - 0.04, CAB.y + D * 0.225);
+    g.add(floorBack);
+    for (const dx of [-W * 0.375, W * 0.375]) {  // 床窓の両脇
+      const fs = new THREE.Mesh(new THREE.BoxGeometry(W * 0.25, 0.08, D * 0.45), steel);
+      fs.position.set(dx, fz - 0.04, CAB.y - D * 0.275);
+      g.add(fs);
+    }
+    // 床窓(合わせガラス+保護グリッド)
+    const floorWin = new THREE.Mesh(new THREE.PlaneGeometry(W * 0.5, D * 0.45), glass);
+    floorWin.rotation.x = -Math.PI / 2;
+    floorWin.position.set(0, fz - 0.02, CAB.y - D * 0.275);
+    g.add(floorWin);
+    for (let i = -2; i <= 2; i++) {              // グリッドバー
+      const bar = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.02, D * 0.45), frameMat);
+      bar.position.set(i * W * 0.1, fz - 0.01, CAB.y - D * 0.275);
+      g.add(bar);
+    }
+
+    // 屋根
+    const roof = new THREE.Mesh(new THREE.BoxGeometry(W, 0.07, D), steel);
+    roof.position.set(0, fz + H + 0.035, CAB.y);
+    g.add(roof);
+
+    // 後壁(南面・鋼板)
+    const back = new THREE.Mesh(new THREE.BoxGeometry(W, H, 0.06), steelIn);
+    back.position.set(0, fz + H / 2, CAB.y + D / 2);
+    g.add(back);
+
+    // 前面(北面): 下部やや内傾のガラス+フレーム
+    const front = new THREE.Mesh(new THREE.PlaneGeometry(W, H * 0.62), glass);
+    front.position.set(0, fz + H * 0.69, CAB.y - D / 2);
+    g.add(front);
+    const frontLow = new THREE.Mesh(new THREE.PlaneGeometry(W, H * 0.42), glass);
+    frontLow.position.set(0, fz + H * 0.19, CAB.y - D / 2 + 0.09);
+    frontLow.rotation.x = 0.22;                  // 下部内傾(下方視界の映り込み低減)
+    g.add(frontLow);
+    // 側壁: 下半分鋼板・上半分ガラス
+    for (const dx of [-W / 2, W / 2]) {
+      const low = new THREE.Mesh(new THREE.BoxGeometry(0.06, H * 0.45, D), steelIn);
+      low.position.set(dx, fz + H * 0.225, CAB.y);
+      g.add(low);
+      const win = new THREE.Mesh(new THREE.PlaneGeometry(D, H * 0.5), glass);
+      win.rotation.y = Math.PI / 2;
+      win.position.set(dx, fz + H * 0.7, CAB.y);
+      g.add(win);
+    }
+    // 柱(四隅)
+    for (const dx of [-W / 2 + 0.04, W / 2 - 0.04]) {
+      for (const dz of [-D / 2 + 0.04, D / 2 - 0.04]) {
+        const post = new THREE.Mesh(new THREE.BoxGeometry(0.08, H, 0.08), frameMat);
+        post.position.set(dx, fz + H / 2, CAB.y + dz);
+        g.add(post);
+      }
+    }
+
+    // 座席(中央・北向き)
+    const seatMat = new THREE.MeshStandardMaterial({ color: 0x37424e, roughness: 0.8 });
+    const pedestal = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.12, 0.45, 12), frameMat);
+    pedestal.position.set(0, fz + 0.225, CAB.y + 0.25);
+    g.add(pedestal);
+    const seat = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.09, 0.44), seatMat);
+    seat.position.set(0, fz + 0.49, CAB.y + 0.25);
+    g.add(seat);
+    const backrest = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.5, 0.09), seatMat);
+    backrest.position.set(0, fz + 0.78, CAB.y + 0.47);
+    g.add(backrest);
+
+    // コントローラーコンソール: 右手=走行 / 左手=横行(内)+巻上(外)
+    // 運転者は北向き → 右 = 東(+x)、左 = 西(−x)
+    const consoleMat = new THREE.MeshStandardMaterial({ color: 0x2b333c, roughness: 0.5, metalness: 0.3 });
+    const mkConsole = (dx, w) => {
+      const c = new THREE.Mesh(new THREE.BoxGeometry(w, 0.55, 0.5), consoleMat);
+      c.position.set(dx, fz + 0.55, CAB.y + 0.1);
+      g.add(c);
+      return c;
+    };
+    mkConsole(0.42, 0.3);    // 右: 走行
+    mkConsole(-0.5, 0.46);   // 左: 横行+巻上
+    const leverMat = new THREE.MeshStandardMaterial({ color: 0x1c2126, roughness: 0.35, metalness: 0.6 });
+    const knobMat = new THREE.MeshStandardMaterial({ color: 0x8a2f2f, roughness: 0.4 });
+    const mkLever = (dx) => {
+      const pivot = new THREE.Group();
+      pivot.position.set(dx, fz + 0.84, CAB.y + 0.1);
+      const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.022, 0.3, 10), leverMat);
+      stick.position.y = 0.15;
+      const knob = new THREE.Mesh(new THREE.SphereGeometry(0.038, 12, 10), knobMat);
+      knob.position.y = 0.31;
+      pivot.add(stick, knob);
+      g.add(pivot);
+      return pivot;
+    };
+    // 実機の前後規約: 前方押し = 巻下/北横行/西走行(ノッチ負)、手前引き = 正
+    this.cabLevers = {
+      hoist: mkLever(-0.62),
+      traverse: mkLever(-0.38),
+      travel: mkLever(0.42),
+    };
+
+    g.traverse(o => { if (o.isMesh && o.material !== glass) o.castShadow = true; });
+    this.bridge.add(g);
+    this.cabGroup = g;
+  }
+
+  // 運転席視点のマウスルック
+  _bindCabLook(canvas) {
+    let dragging = false, px = 0, py = 0;
+    canvas.addEventListener('pointerdown', (e) => {
+      if (this.cameraMode !== 'cab') return;
+      dragging = true; px = e.clientX; py = e.clientY;
+      canvas.setPointerCapture(e.pointerId);
+    });
+    canvas.addEventListener('pointermove', (e) => {
+      if (!dragging || this.cameraMode !== 'cab') return;
+      this.cabYaw = Math.max(-2.4, Math.min(2.4, this.cabYaw - (e.clientX - px) * 0.004));
+      this.cabPitch = Math.max(-1.35, Math.min(0.45, this.cabPitch - (e.clientY - py) * 0.004));
+      px = e.clientX; py = e.clientY;
+    });
+    const end = () => { dragging = false; };
+    canvas.addEventListener('pointerup', end);
+    canvas.addEventListener('pointercancel', end);
+  }
+
   _buildLoad() {
     const { load } = GEOM;
     this.loadMesh = new THREE.Group();
@@ -426,9 +581,24 @@ export class SceneManager {
       this.trailGeo.attributes.position.needsUpdate = true;
     }
 
+    // キャブ内レバーの表示(前方押し = ノッチ負 → 前傾)
+    if (rs.notches && this.cabLevers) {
+      const tilt = 9 * Math.PI / 180;   // 1 ノッチあたり約 9°
+      this.cabLevers.travel.rotation.x = rs.notches.travel * tilt;
+      this.cabLevers.traverse.rotation.x = rs.notches.traverse * tilt;
+      this.cabLevers.hoist.rotation.x = rs.notches.hoist * tilt;
+    }
+
     // カメラ
     if (this.cameraMode === 'orbit') {
       this.controls.update();
+    } else if (this.cameraMode === 'cab') {
+      // 運転席: キャブ内の着座目線(ブリッジと共に移動)・マウスルック
+      this.camera.position.set(rs.X, CAB.eyeZ, CAB.y + 0.25 + CAB.eyeYOff);
+      this.camera.rotation.set(0, 0, 0);
+      this.camera.rotation.order = 'YXZ';
+      this.camera.rotation.y = this.cabYaw;    // 既定 0 = 北向き(three −z = 物理 −y)
+      this.camera.rotation.x = this.cabPitch;
     } else if (this.cameraMode === 'operator') {
       // 床上運転者: ブリッジの少し南側を歩いて追従
       const px = rs.X - 3.5, pz = Math.min(span - 1, rs.Y + 5.5);
