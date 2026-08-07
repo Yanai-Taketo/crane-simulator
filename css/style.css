@@ -120,6 +120,13 @@ body {
 #task-result { margin-top: 8px; font-size: 12px; line-height: 1.8; padding: 8px; border-radius: 8px; background: rgba(93,216,121,0.12); border: 1px solid rgba(93,216,121,0.4); }
 #task-result .score-big { font-size: 22px; font-weight: 800; color: var(--ok); }
 
+/* ---- 試験の減点表・軌跡デブリーフ ---- */
+.ded-table { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 11px; }
+.ded-table th, .ded-table td { border: 1px solid rgba(120,150,180,0.25); padding: 2px 5px; text-align: left; }
+.ded-table th { color: var(--text-dim); font-weight: 600; }
+.ded-table td:last-child { color: var(--danger); text-align: right; white-space: nowrap; }
+#exam-traj { display: block; margin-top: 8px; width: 100%; border-radius: 6px; border: 1px solid rgba(120,150,180,0.25); }
+
 /* ---- 設定 ---- */
 #settings-panel { top: 56px; left: 264px; width: 250px; }
 .set-row { display: flex; flex-direction: column; gap: 4px; font-size: 12px; margin-bottom: 10px; }

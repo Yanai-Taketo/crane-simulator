@@ -530,6 +530,44 @@ export class SceneManager {
     return g;
   }
 
+  // 試験コースの障害物(ポール・バー・壁)を構築/撤去
+  setCourse(course) {
+    if (this.courseGroup) {
+      this.scene.remove(this.courseGroup);
+      this.courseGroup.traverse(o => { o.geometry?.dispose?.(); });
+      this.courseGroup = null;
+    }
+    if (!course) return;
+    const g = new THREE.Group();
+    const poleMat = new THREE.MeshStandardMaterial({ color: 0xe8c33a, roughness: 0.6 });
+    const baseMat = new THREE.MeshStandardMaterial({ color: 0x333940, roughness: 0.8 });
+    const barMat = new THREE.MeshStandardMaterial({ color: 0xd84a3a, roughness: 0.6 });
+    const wallMat = new THREE.MeshStandardMaterial({ color: 0x8fa3b8, roughness: 0.9, transparent: true, opacity: 0.55, side: THREE.DoubleSide });
+    for (const ob of course.obstacles) {
+      if (ob.type === 'pole') {
+        const h = ob.zHi - ob.zLo;
+        const pole = new THREE.Mesh(new THREE.CylinderGeometry(ob.r, ob.r, h, 12), poleMat);
+        pole.position.set(ob.x, ob.zLo + h / 2, ob.y);
+        pole.castShadow = true;
+        const base = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.4, 0.1, 16), baseMat);
+        base.position.set(ob.x, 0.05, ob.y);
+        g.add(pole, base);
+      } else {
+        const h = ob.zHi - ob.zLo;
+        const tall = ob.zLo < 0.5 && ob.zHi > 3.0;   // 壁・フェンス
+        const m = new THREE.Mesh(
+          new THREE.BoxGeometry(ob.halfX * 2, h, ob.halfY * 2),
+          tall ? wallMat : barMat
+        );
+        m.position.set(ob.x, ob.zLo + h / 2, ob.y);
+        m.castShadow = !tall;
+        g.add(m);
+      }
+    }
+    this.scene.add(g);
+    this.courseGroup = g;
+  }
+
   setZone(which, x, y, visible = true) {
     const z = which === 'start' ? this.startZone : this.targetZone;
     z.position.set(x, 0, y);

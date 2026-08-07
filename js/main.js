@@ -9,6 +9,7 @@ import { CraneAudio } from './ui/audio.js';
 import { SwayScope } from './ui/swayscope.js';
 import { TrainingTask, START_POS } from './training.js';
 import { Walker } from './ui/walker.js';
+import { LicenseExam } from './exam/license-mode.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -33,6 +34,7 @@ function toast(msg, ms = 2600) {
 }
 
 const task = new TrainingTask(scene, toast);
+const exam = new LicenseExam(scene, toast);
 
 // ---- ペンダント結線 ----
 pendant.onEstop = () => {
@@ -142,10 +144,23 @@ $('btn-ctrl-pendant').addEventListener('click', () => setControlMode('pendant'))
 $('btn-ctrl-cab').addEventListener('click', () => setControlMode('cab'));
 setActive(ctrlBtns, 'btn-ctrl-pendant');
 
-const modeBtns = ['btn-mode-free', 'btn-mode-task'];
-$('btn-mode-free').addEventListener('click', () => { task.cancel(); setActive(modeBtns, 'btn-mode-free'); toast('自由練習モード'); });
+const modeBtns = ['btn-mode-free', 'btn-mode-task', 'btn-mode-exam'];
+$('btn-mode-free').addEventListener('click', () => { task.cancel(); exam.cancel(); setActive(modeBtns, 'btn-mode-free'); toast('自由練習モード'); });
 $('btn-mode-task').addEventListener('click', () => {
+  exam.cancel();
   if (task.start(sim)) setActive(modeBtns, 'btn-mode-task');
+});
+$('btn-mode-exam').addEventListener('click', () => {
+  task.cancel();
+  if (exam.start(sim)) {
+    setActive(modeBtns, 'btn-mode-exam');
+    // 実試験と同じ 5t 試験場仕様機(二次抵抗制御)に切替・荷は 1t 固定
+    sim.setProfile('exam');
+    $('set-profile').value = 'exam';
+    $('set-mass').value = 1000; $('set-mass-val').textContent = '1000';
+    $('set-cg').value = 0; $('set-cg-val').textContent = '0.00';
+    toast('運転士実技試験: 試験場仕様機(二次抵抗制御)に切替えました');
+  }
 });
 setActive(modeBtns, 'btn-mode-free');
 
@@ -161,6 +176,7 @@ $('btn-reset').addEventListener('click', () => {
   scene.clearTrail();
   scene.setTrailVisible($('set-trails').checked);
   if (task.state !== 'idle') task.cancel();
+  if (exam.state !== 'idle') exam.cancel();
   setActive(modeBtns, 'btn-mode-free');
   toast('リセットしました');
 });
@@ -219,6 +235,7 @@ function frame(now) {
   const simDt = Math.max(0, sim.time - lastSimTime);
   lastSimTime = sim.time;
   task.update(rs, simDt);
+  exam.update(rs, simDt);
 
   hudAccum += dt;
   if (hudAccum >= 1 / 15) {   // HUD・スコープは 15Hz で十分
@@ -235,3 +252,4 @@ requestAnimationFrame(frame);
 // E2E テスト・デバッグ用ハンドル
 window.__craneSim = sim;
 window.__craneScene = scene;
+window.__craneExam = exam;
