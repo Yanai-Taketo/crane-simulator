@@ -74,6 +74,8 @@ function setControlMode(m) {
     setActive(camBtns, 'btn-cam-cab');
     toast('運転室モード: レバーをドラッグ、または矢印/W/S キー。画面ドラッグで見回し');
   } else {
+    leverPanel.zeroAll();               // 降車時は全レバー中立(インターロック維持)
+    sim.setLevers(leverPanel.notches);
     sim.setCommand(pendant.getCommand());
     scene.setCameraMode('orbit');
     setActive(camBtns, 'btn-cam-orbit');

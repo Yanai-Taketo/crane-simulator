@@ -99,7 +99,8 @@ body {
 #topbar {
   top: 12px; left: 50%; transform: translateX(-50%);
   display: flex; gap: 6px; align-items: center; padding: 8px 10px;
-  flex-wrap: wrap; justify-content: center; max-width: 96vw;
+  flex-wrap: wrap; justify-content: center;
+  width: max-content; max-width: 96vw;
 }
 .tbtn {
   appearance: none; cursor: pointer; font-family: inherit;
@@ -178,4 +179,7 @@ body {
 .lever-knob .lever-notch-label { font-size: 13px; font-weight: 800; color: var(--text); }
 .lever-name { font-size: 11px; font-weight: 700; margin-top: 4px; color: var(--text); }
 .lever-keys { margin-left: 5px; font-size: 10px; color: var(--text-dim); font-weight: 400; }
-.lever-hint { font-size: 10px; color: var(--text-dim); margin-top: 6px; text-align: center; line-height: 1.6; }
+.lever-hint { font-size: 10px; color: var(--text-dim); margin-top: 6px; text-align: center; line-height: 1.6; max-width: 226px; }
+
+/* レバーパネル表示中は課題パネルを左へ退避(重なり防止) */
+#lever-panel:not(.hidden) ~ #task-panel { right: 300px; }

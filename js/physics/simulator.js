@@ -91,10 +91,11 @@ export class CraneSimulator {
   // 3 本目のレバー投入は拒否し blocked にその軸名を返す。
   setLevers(n) {
     const c = NOTCH.count;
+    const safe = (v, cur) => Number.isFinite(v) ? clamp(Math.round(v), -c, c) : cur;
     const next = {
-      travel: clamp(Math.round(n.travel ?? this.notches.travel), -c, c),
-      traverse: clamp(Math.round(n.traverse ?? this.notches.traverse), -c, c),
-      hoist: clamp(Math.round(n.hoist ?? this.notches.hoist), -c, c),
+      travel: safe(n.travel ?? this.notches.travel, this.notches.travel),
+      traverse: safe(n.traverse ?? this.notches.traverse, this.notches.traverse),
+      hoist: safe(n.hoist ?? this.notches.hoist, this.notches.hoist),
     };
     let blocked = null;
     const axes = ['travel', 'traverse', 'hoist'];
@@ -110,11 +111,12 @@ export class CraneSimulator {
     return { blocked };
   }
 
-  // 全操作が中立(ゼロノッチ)か — 非常停止復帰インターロックに使用
+  // 全操作が中立(ゼロノッチ)か — 非常停止復帰インターロックに使用。
+  // モード切替による迂回を防ぐため、両系統(ペンダント指令とレバーノッチ)の
+  // すべてが中立であることを要求する(構造規格 34 条 2 項の趣旨)。
   controlsNeutral() {
-    return this.controlMode === 'lever'
-      ? this.notches.travel === 0 && this.notches.traverse === 0 && this.notches.hoist === 0
-      : this.cmd.travel === 0 && this.cmd.traverse === 0 && this.cmd.hoist === 0;
+    return this.notches.travel === 0 && this.notches.traverse === 0 && this.notches.hoist === 0
+        && this.cmd.travel === 0 && this.cmd.traverse === 0 && this.cmd.hoist === 0;
   }
 
   setLoadMass(kg) { this.loadMass = kg; }
@@ -198,7 +200,10 @@ export class CraneSimulator {
       const fr = (n) => Math.sign(n) * NOTCH.fractions[Math.abs(n)];
       tgtX = es ? 0 : fr(this.notches.travel) * CRANE.travelSpeed[1];
       tgtY = es ? 0 : fr(this.notches.traverse) * CRANE.traverseSpeed[1];
-      tgtL = es ? 0 : -fr(this.notches.hoist) * hoistVmax;
+      // 軽負荷倍速は最上段ノッチのみ増速(中間ノッチは絶対周波数基準のまま)
+      const nh = this.notches.hoist;
+      const hoistTop = Math.abs(nh) === NOTCH.count ? hoistVmax : CRANE.hoistSpeed[1];
+      tgtL = es ? 0 : -Math.sign(nh) * NOTCH.fractions[Math.abs(nh)] * hoistTop;
     } else {
       tgtX = es ? 0 : this.cmd.travel * CRANE.travelSpeed[this.cmd.step - 1];
       tgtY = es ? 0 : this.cmd.traverse * CRANE.traverseSpeed[this.cmd.step - 1];

@@ -2,7 +2,7 @@
 const $ = (id) => document.getElementById(id);
 
 const TARGETS = [
-  { x: 24.5, y: 12.5 }, { x: 25.0, y: 4.0 }, { x: 14.0, y: 13.5 },
+  { x: 24.5, y: 12.5 }, { x: 25.0, y: 4.0 }, { x: 14.0, y: 12.6 },
   { x: 21.0, y: 8.0 }, { x: 9.0, y: 12.0 },
 ];
 export const START_POS = { x: 6.0, y: 4.0 };

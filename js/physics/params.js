@@ -46,8 +46,10 @@ export const CRANE = {
   ropeMax: 7.4,
 
   // 移動範囲(緩衝器位置)
+  // 横行南端はキャブ保護リミット: 実機同様、ガーダ端部吊下げキャブの手前で
+  // トロリを停止させ、フック・吊荷がキャブに干渉しない位置に制限する
   travelMin: 1.6, travelMax: 28.4,
-  traverseMin: 1.0, traverseMax: 15.0,
+  traverseMin: 1.0, traverseMax: 13.0,
 };
 
 // 運転室モード: ノッチ式コントローラー(インバータ多段速)

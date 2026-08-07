@@ -362,3 +362,55 @@ test('運転室レバー: 巻上ノッチと軽負荷高速・巻下でロープ
   const v = sim.getRenderState().speeds.hoist;
   assert.ok(Math.abs(v - CRANE.hoistSpeedLight) < 0.02, `軽負荷高速 ${v} vs ${CRANE.hoistSpeedLight}`);
 });
+
+test('回帰: モード切替でゼロノッチインターロックを迂回できない', () => {
+  const sim = new CraneSimulator({ loadMass: 1000 });
+  sim.setLevers({ travel: 5, traverse: 0, hoist: 0 });
+  for (let i = 0; i < 60 * 5; i++) sim.step(1 / 60);
+  sim.estop();
+  for (let i = 0; i < 60 * 5; i++) sim.step(1 / 60);
+  assert.ok(sim.estopActive, 'レバー投入中は復帰しない');
+  // ペンダントへ切替(指令は中立)でも、レバーが投入されたままなら復帰しない
+  sim.setCommand({ travel: 0, traverse: 0, hoist: 0, step: 1 });
+  for (let i = 0; i < 60 * 3; i++) sim.step(1 / 60);
+  assert.ok(sim.estopActive, 'モード切替では迂回できないこと');
+  sim.setLevers({ travel: 0, traverse: 0, hoist: 0 });
+  sim.setCommand({ travel: 0, traverse: 0, hoist: 0, step: 1 });
+  for (let i = 0; i < 60 * 2; i++) sim.step(1 / 60);
+  assert.ok(!sim.estopActive, '全系統中立で復帰');
+});
+
+test('回帰: 非有限ノッチ入力で NaN 汚染しない', () => {
+  const sim = new CraneSimulator({ loadMass: 1000 });
+  sim.setLevers({ travel: NaN, traverse: Infinity, hoist: undefined });
+  assert.deepEqual(sim.notches, { travel: 0, traverse: 0, hoist: 0 });
+  sim.setLevers({ travel: 2 });
+  sim.setLevers({ traverse: 'abc' });
+  assert.equal(sim.notches.travel, 2);
+  assert.equal(sim.notches.traverse, 0);
+  for (let i = 0; i < 120; i++) sim.step(1 / 60);
+  assert.ok(Number.isFinite(sim.energy()), 'エネルギーが有限');
+});
+
+test('回帰: 軽負荷倍速は最上段ノッチのみ(中間ノッチは通常速度基準)', () => {
+  const sim = new CraneSimulator({ loadMass: 500 });   // 軽負荷(定格50%未満)
+  sim.setLevers({ hoist: -3 });   // まず巻下で余裕を作る
+  for (let i = 0; i < 60 * 3; i++) sim.step(1 / 60);
+  sim.setLevers({ hoist: 3 });    // 中間ノッチ巻上
+  for (let i = 0; i < 60 * 5; i++) sim.step(1 / 60);
+  const vMid = sim.getRenderState().speeds.hoist;
+  const expectMid = 0.5 * CRANE.hoistSpeed[1];   // 50% × 通常最高速(増速なし)
+  assert.ok(Math.abs(vMid - expectMid) < 0.01, `N3 軽負荷 ${vMid} vs ${expectMid}`);
+  sim.setLevers({ hoist: -5 });   // 最上段は軽負荷倍速が効く
+  for (let i = 0; i < 60 * 5; i++) sim.step(1 / 60);
+  const vTop = Math.abs(sim.getRenderState().speeds.hoist);
+  assert.ok(Math.abs(vTop - CRANE.hoistSpeedLight) < 0.015, `N5 軽負荷 ${vTop} vs ${CRANE.hoistSpeedLight}`);
+});
+
+test('回帰: 横行南端はキャブ保護リミットで停止する', () => {
+  const sim = new CraneSimulator({ loadMass: 1000 });
+  sim.setLevers({ traverse: 5 });   // 南進(+y)
+  for (let i = 0; i < 60 * 40; i++) sim.step(1 / 60);
+  assert.ok(sim.s[2] <= CRANE.traverseMax + 1e-9, `Y=${sim.s[2]}`);
+  assert.ok(Math.abs(CRANE.traverseMax - 13.0) < 1e-9, 'キャブ保護リミット 13.0 m');
+});
