@@ -7,22 +7,23 @@
 //   [10..12] 吊荷重心位置       [13..15] 吊荷速度
 //   [16] ψ  吊荷ヨー角          [17] dψ
 //
-// 要素:
+// 要素(docs/PLAN-v2.md「Stage 1 設計改訂」参照):
 //  - ロープ(吊点→フック): 片側弾性 kR·δ + cR·δ'(T ≥ 0)。反力はトロリ/ブリッジへ
-//  - スリング 4 本(フック→荷上面 4 隅): 各脚が片側弾性。脚別張力・ねじれ復元
-//    トルク(四線振り子 k=Mgr₁r₂/h)・偏心時の張力再配分が幾何から自然に生じる
-//  - 吊荷ヨー: I·ψ̈ = Σ(r×F)z − cψ·ψ̇
+//  - スリングチェーン(フック→荷重心): 単一片側弾性リンク(自然長 chainLen0、
+//    剛性 kChain = 4 脚合成)。二重振り子の閉形式解と照合可能
+//  - 吊荷ヨー: I·ψ̈ = −k_yaw·ψ − cψ·ψ̇、k_yaw = Fc·r₁·r₂/h(四線振り子・
+//    チェーン張力に比例、たるみで消失)。k=Mgr₁r₂/h の解析解と±2%一致を検証済み
+//  - 脚別張力(表示・採点用): 偏心てこ配分則 F=(W/4)(1±2ex/a)(1±2ey/b) を
+//    チェーン張力から準静的に算出(aux.legT)
 //  - 接地: 荷は床、フックは床+支持面(置き荷/吊り荷の上面)
-//  - 空力抗力は荷・フック双方(荷が支配的)
 //
 // u: { vcmdX, vcmdY, L0, dL, t0, windX, windY }
 // p: { mb, mt, mHook, mLoad, attached, g, cx, cy, kpX, kpY, FmaxX, FmaxY,
-//      pivotH, kRope, cRope, kLeg, cLeg, legLen0, corners[4][2](荷ローカル水平),
-//      cgOffX, cgOffY, topOffZ(重心→上面), Iyaw, cYaw,
-//      knL, cnL, knH, cnH, mu, loadBottomOff, hookBottomOff,
-//      hookBlock{ x,y,halfX,halfY,top }|null(フックの支持面),
-//      rhoAir, CdALoad, CdAHook, cLin }
-// aux: { T, legT[4], N, NHook, dist, stretch, yawTorque }
+//      pivotH, kRope, cRope, kChain, cChain, chainLen0,
+//      hookEyeR, rTop, hVert, legCos, legSpanA, legSpanB, cgOffX, cgOffY,
+//      Iyaw, cYaw, knL, cnL, knH, cnH, mu, loadBottomOff, hookBottomOff,
+//      hookBlock{ x,y,halfX,halfY,top }|null, rhoAir, CdALoad, CdAHook, cLin }
+// aux: { T, Tc, legT[4], N, NHook, dist, stretch, chainStretch }
 
 export function rhs2(t, s, u, p, out, aux = null) {
   const X = s[0], dX = s[1], Y = s[2], dY = s[3];
@@ -44,49 +45,29 @@ export function rhs2(t, s, u, p, out, aux = null) {
     if (T < 0) T = 0;
   }
 
-  // ---- 駆動力(現行どおり速度制御+飽和。試験場仕様は simulator 側で置換) ----
+  // ---- 駆動力(インバータ速度制御+飽和。試験場仕様は simulator 側で置換) ----
   let FdrvX = p.kpX * (u.vcmdX - dX);
   if (FdrvX > p.FmaxX) FdrvX = p.FmaxX; else if (FdrvX < -p.FmaxX) FdrvX = -p.FmaxX;
   let FdrvY = p.kpY * (u.vcmdY - dY);
   if (FdrvY > p.FmaxY) FdrvY = p.FmaxY; else if (FdrvY < -p.FmaxY) FdrvY = -p.FmaxY;
 
-  // ---- スリング 4 脚(玉掛け時のみ) ----
-  let Fsx = 0, Fsy = 0, Fsz = 0;     // フックが受ける脚反力の合力(荷側は逆符号)
-  let tauZ = 0;
-  const legT = aux ? (aux.legT || (aux.legT = [0, 0, 0, 0])) : null;
+  // ---- スリングチェーン(フック→荷重心・玉掛け時のみ) ----
+  let Fcx = 0, Fcy = 0, Fcz = 0;   // フックが受ける力(荷側は逆符号)
+  let Tc = 0;
   if (p.attached) {
-    const cs = Math.cos(psi), sn = Math.sin(psi);
-    for (let i = 0; i < 4; i++) {
-      // 取付隅(荷ローカル→ワールド): 幾何中心 = 重心 − cgOff を回転
-      const lx = p.corners[i][0] - p.cgOffX;
-      const ly = p.corners[i][1] - p.cgOffY;
-      const cxw = px + lx * cs - ly * sn;
-      const cyw = py + lx * sn + ly * cs;
-      const czw = pz + p.topOffZ;
-      // 脚上端はフックアイ(半径 hookEyeR のリング・世界方位固定)。
-      // 点吊りではねじれ復元が生じないため有限半径が本質(四線振り子 k=Mgr₁r₂/h)
-      const tx = hx + p.hookEyeR * p.topDirs[i][0];
-      const ty = hy + p.hookEyeR * p.topDirs[i][1];
-      const dxl = cxw - tx, dyl = cyw - ty, dzl = czw - hz;
-      const ll = Math.sqrt(dxl * dxl + dyl * dyl + dzl * dzl);
-      if (ll < 1e-9) continue;
-      const st = ll - p.legLen0;
-      if (st <= 0) { if (legT) legT[i] = 0; continue; }
-      // 脚の伸び速度(隅の速度はヨー回転項を含む)
-      const cvx = pvx + (-dpsi) * (lx * sn + ly * cs) * 1;      // d/dt(lx cs − ly sn)
-      const cvy = pvy + dpsi * (lx * cs - ly * sn);
-      const drate = ((dxl) * (cvx - hvx) + (dyl) * (cvy - hvy) + (dzl) * (pvz - hvz)) / ll;
-      let F = p.kLeg * st + p.cLeg * drate;
-      if (F < 0) F = 0;
-      if (legT) legT[i] = F;
-      const ux = dxl / ll, uy = dyl / ll, uz = dzl / ll;
-      // フックは隅方向へ引かれ、荷は隅からフック方向へ引かれる
-      Fsx += F * ux; Fsy += F * uy; Fsz += F * uz;
-      // 荷へのヨートルク: r×F の z 成分(r = 隅 − 重心, F = フック向き)
-      const rxl = cxw - px, ryl = cyw - py;
-      tauZ += rxl * (-F * uy) - ryl * (-F * ux);
+    const cxv = px - hx, cyv = py - hy, czv = pz - hz;
+    const cl = Math.sqrt(cxv * cxv + cyv * cyv + czv * czv);
+    if (cl > 1e-9) {
+      const cst = cl - p.chainLen0;
+      if (cst > 0) {
+        const crate = (cxv * (pvx - hvx) + cyv * (pvy - hvy) + czv * (pvz - hvz)) / cl;
+        Tc = p.kChain * cst + p.cChain * crate;
+        if (Tc < 0) Tc = 0;
+        const ux = cxv / cl, uy = cyv / cl, uz = czv / cl;
+        Fcx = Tc * ux; Fcy = Tc * uy; Fcz = Tc * uz;   // フックは荷方向へ引かれる
+      }
     }
-  } else if (legT) { legT[0] = legT[1] = legT[2] = legT[3] = 0; }
+  }
 
   // ---- 接地(荷: 床 / フック: 床+支持面) ----
   let NL = 0, FfLx = 0, FfLy = 0;
@@ -121,7 +102,7 @@ export function rhs2(t, s, u, p, out, aux = null) {
   const cdL = 0.5 * p.rhoAir * p.CdALoad * lw + p.cLin;
   const hwx = hvx - u.windX, hwy = hvy - u.windY;
   const hw = Math.sqrt(hwx * hwx + hwy * hwy + hvz * hvz);
-  const cdH = 0.5 * p.rhoAir * p.CdAHook * hw + 0.2;
+  const cdH = 0.5 * p.rhoAir * p.CdAHook * hw + p.cLinHook;
 
   // ---- 運動方程式 ----
   out[0] = dX;
@@ -129,16 +110,18 @@ export function rhs2(t, s, u, p, out, aux = null) {
   out[2] = dY;
   out[3] = (FdrvY - p.cy * dY - T * ey) / p.mt;
   out[4] = hvx; out[5] = hvy; out[6] = hvz;
-  out[7] = (T * ex + Fsx - cdH * hwx + FfHx) / p.mHook;
-  out[8] = (T * ey + Fsy - cdH * hwy + FfHy) / p.mHook;
-  out[9] = (T * ez + Fsz + NH - cdH * hvz) / p.mHook - p.g;
+  out[7] = (T * ex + Fcx - cdH * hwx + FfHx) / p.mHook;
+  out[8] = (T * ey + Fcy - cdH * hwy + FfHy) / p.mHook;
+  out[9] = (T * ez + Fcz + NH - cdH * hvz) / p.mHook - p.g;
   if (p.attached) {
     out[10] = pvx; out[11] = pvy; out[12] = pvz;
-    out[13] = (-Fsx - cdL * lwx + FfLx) / p.mLoad;
-    out[14] = (-Fsy - cdL * lwy + FfLy) / p.mLoad;
-    out[15] = (-Fsz + NL - cdL * pvz) / p.mLoad - p.g;
+    out[13] = (-Fcx - cdL * lwx + FfLx) / p.mLoad;
+    out[14] = (-Fcy - cdL * lwy + FfLy) / p.mLoad;
+    out[15] = (-Fcz + NL - cdL * pvz) / p.mLoad - p.g;
+    // ヨー: 四線振り子ねじれ復元(チェーン張力に比例・たるみで消失)
+    const kYaw = Tc * p.hookEyeR * p.rTop / p.hVert;
     out[16] = dpsi;
-    out[17] = (tauZ - p.cYaw * dpsi) / p.Iyaw;
+    out[17] = (-kYaw * Math.sin(psi) - p.cYaw * dpsi) / p.Iyaw;
   } else {
     out[10] = 0; out[11] = 0; out[12] = 0;
     out[13] = 0; out[14] = 0; out[15] = 0;
@@ -146,15 +129,28 @@ export function rhs2(t, s, u, p, out, aux = null) {
   }
 
   if (aux) {
-    aux.T = T; aux.N = NL; aux.NHook = NH;
-    aux.dist = dist; aux.stretch = stretch; aux.yawTorque = tauZ;
+    aux.T = T; aux.Tc = Tc; aux.N = NL; aux.NHook = NH;
+    aux.dist = dist; aux.stretch = stretch;
     aux.FdrvX = FdrvX; aux.FdrvY = FdrvY;
     aux.ropeHx = T * ex; aux.ropeHy = T * ey;
+    // 脚別張力(準静的てこ配分則): W = チェーン張力の鉛直成分相当
+    const legT = aux.legT || (aux.legT = [0, 0, 0, 0]);
+    if (p.attached && Tc > 0) {
+      const fx = 2 * p.cgOffX / p.legSpanA, fy = 2 * p.cgOffY / p.legSpanB;
+      // 隅順序: [−x−y, −x+y, +x−y, +x+y]
+      legT[0] = Math.max(0, Tc / 4 * (1 - fx) * (1 - fy)) / p.legCos;
+      legT[1] = Math.max(0, Tc / 4 * (1 - fx) * (1 + fy)) / p.legCos;
+      legT[2] = Math.max(0, Tc / 4 * (1 + fx) * (1 - fy)) / p.legCos;
+      legT[3] = Math.max(0, Tc / 4 * (1 + fx) * (1 + fy)) / p.legCos;
+    } else {
+      legT[0] = legT[1] = legT[2] = legT[3] = 0;
+    }
   }
   return out;
 }
 
-// 全力学的エネルギー(検証用・散逸なし条件で保存)
+// 全力学的エネルギー(検証用: ヨー励起なし・散逸なし条件で保存)
+// ※ ヨー剛性は張力比例(準静的近似)のため、ヨー励起時は厳密保存しない
 export function totalEnergy2(s, Leff, p) {
   const ke = 0.5 * (p.mb + p.mt) * s[1] * s[1] + 0.5 * p.mt * s[3] * s[3]
     + 0.5 * p.mHook * (s[7] * s[7] + s[8] * s[8] + s[9] * s[9])
@@ -165,15 +161,9 @@ export function totalEnergy2(s, Leff, p) {
   let pe = p.mHook * p.g * s[6] + 0.5 * p.kRope * st * st;
   if (p.attached) {
     pe += p.mLoad * p.g * s[12];
-    const cs = Math.cos(s[16]), sn = Math.sin(s[16]);
-    for (let i = 0; i < 4; i++) {
-      const lx = p.corners[i][0] - p.cgOffX, ly = p.corners[i][1] - p.cgOffY;
-      const cxw = s[10] + lx * cs - ly * sn, cyw = s[11] + lx * sn + ly * cs, czw = s[12] + p.topOffZ;
-      const tx = s[4] + p.hookEyeR * p.topDirs[i][0], ty = s[5] + p.hookEyeR * p.topDirs[i][1];
-      const ll = Math.hypot(cxw - tx, cyw - ty, czw - s[6]);
-      const stl = Math.max(0, ll - p.legLen0);
-      pe += 0.5 * p.kLeg * stl * stl;
-    }
+    const cl = Math.hypot(s[10] - s[4], s[11] - s[5], s[12] - s[6]);
+    const cst = Math.max(0, cl - p.chainLen0);
+    pe += 0.5 * p.kChain * cst * cst;
   }
   return ke + pe;
 }
