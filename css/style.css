@@ -183,3 +183,9 @@ body {
 
 /* レバーパネル表示中は課題パネルを左へ退避(重なり防止) */
 #lever-panel:not(.hidden) ~ #task-panel { right: 300px; }
+
+.set-row select {
+  font-family: inherit; font-size: 12px; color: var(--text);
+  background: rgba(70, 90, 112, 0.35); border: 1px solid var(--panel-border);
+  border-radius: 6px; padding: 4px 6px;
+}

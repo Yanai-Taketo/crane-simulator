@@ -25,6 +25,14 @@
 //      hookBlock{ x,y,halfX,halfY,top }|null, rhoAir, CdALoad, CdAHook, cLin }
 // aux: { T, Tc, legT[4], N, NHook, dist, stretch, chainStretch }
 
+// クロスの式による駆動力。drv = { vSync(符号付き・0=無通電), sm, Fb }
+export function klossForce(drv, v) {
+  if (!drv || drv.vSync === 0) return 0;
+  const sl = (drv.vSync - v) / drv.vSync;
+  if (Math.abs(sl) < 1e-9) return 0;
+  return Math.sign(drv.vSync) * 2 * drv.Fb / (sl / drv.sm + drv.sm / sl);
+}
+
 export function rhs2(t, s, u, p, out, aux = null) {
   const X = s[0], dX = s[1], Y = s[2], dY = s[3];
   const hx = s[4], hy = s[5], hz = s[6], hvx = s[7], hvy = s[8], hvz = s[9];
@@ -45,11 +53,20 @@ export function rhs2(t, s, u, p, out, aux = null) {
     if (T < 0) T = 0;
   }
 
-  // ---- 駆動力(インバータ速度制御+飽和。試験場仕様は simulator 側で置換) ----
-  let FdrvX = p.kpX * (u.vcmdX - dX);
-  if (FdrvX > p.FmaxX) FdrvX = p.FmaxX; else if (FdrvX < -p.FmaxX) FdrvX = -p.FmaxX;
-  let FdrvY = p.kpY * (u.vcmdY - dY);
-  if (FdrvY > p.FmaxY) FdrvY = p.FmaxY; else if (FdrvY < -p.FmaxY) FdrvY = -p.FmaxY;
+  // ---- 駆動力 ----
+  // inverter: 速度制御+推力飽和 / kloss(試験場仕様): トルク-すべり曲線
+  // T(s) = 2·Tb/(s/sm + sm/s)。s はコンタクタ方向基準 → 逆ノッチ(プラッギング)
+  // や巻下の回生制動が同一式から自然に生じる
+  let FdrvX, FdrvY;
+  if (p.klossX) {
+    FdrvX = klossForce(p.klossX, dX) - (u.brakeX || 0) * Math.sign(dX);
+    FdrvY = klossForce(p.klossY, dY) - (u.brakeY || 0) * Math.sign(dY);
+  } else {
+    FdrvX = p.kpX * (u.vcmdX - dX);
+    if (FdrvX > p.FmaxX) FdrvX = p.FmaxX; else if (FdrvX < -p.FmaxX) FdrvX = -p.FmaxX;
+    FdrvY = p.kpY * (u.vcmdY - dY);
+    if (FdrvY > p.FmaxY) FdrvY = p.FmaxY; else if (FdrvY < -p.FmaxY) FdrvY = -p.FmaxY;
+  }
 
   // ---- スリングチェーン(フック→荷重心・玉掛け時のみ) ----
   let Fcx = 0, Fcy = 0, Fcz = 0;   // フックが受ける力(荷側は逆符号)

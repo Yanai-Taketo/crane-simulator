@@ -8,6 +8,7 @@ export class Hud {
       hookHeight: $('hud-hook-height'), rope: $('hud-rope'),
       travelSpeed: $('hud-travel-speed'), traverseSpeed: $('hud-traverse-speed'),
       hoistSpeed: $('hud-hoist-speed'), tension: $('hud-tension'),
+      loadMeter: $('hud-loadmeter'),
       loadMass: $('hud-load-mass'), time: $('hud-time'),
       warnings: $('hud-warnings'),
     };
@@ -24,6 +25,8 @@ export class Hud {
     e.traverseSpeed.textContent = `${rs.speeds.traverse.toFixed(2)} m/s`;
     e.hoistSpeed.textContent = `${rs.speeds.hoist.toFixed(2)} m/s`;
     e.tension.textContent = `${(rs.T / 1000).toFixed(1)} kN`;
+    e.loadMeter.textContent = `${(rs.loadMeter / 1000).toFixed(2)} t`;
+    e.loadMeter.style.color = rs.overload ? 'var(--danger)' : '';
     e.loadMass.textContent = rs.loadAttached ? `${rs.loadMass} kg` : `— (フックのみ)`;
     const m = Math.floor(simTime / 60), s = Math.floor(simTime % 60);
     e.time.textContent = `${m}:${String(s).padStart(2, '0')}`;

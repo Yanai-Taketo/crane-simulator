@@ -135,6 +135,17 @@ $('set-wind').addEventListener('input', (e) => {
   sim.setWind(v);
 });
 $('set-trails').addEventListener('change', (e) => scene.setTrailVisible(e.target.checked));
+$('set-profile').addEventListener('change', (e) => {
+  sim.setProfile(e.target.value);
+  toast(e.target.value === 'exam'
+    ? '試験場仕様機: 二次抵抗制御 — 速度は荷で変わり、ノッチ0は惰行です'
+    : 'インバータ機(標準)');
+});
+$('set-cg').addEventListener('input', (e) => {
+  const v = Number(e.target.value);
+  $('set-cg-val').textContent = v.toFixed(2);
+  sim.setCgOffset(v, 0);
+});
 let slowmo = false;
 $('set-slowmo').addEventListener('change', (e) => { slowmo = e.target.checked; });
 

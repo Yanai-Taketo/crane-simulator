@@ -1,9 +1,9 @@
 // クレーンシミュレータ本体 v2: 駆動指令・ウインチ・玉掛け・接触・警報を統括
 // 物理コアは crane-model2.js(二質点+ヨー)。フック・吊荷とも実体の質点であり、
 // v1 で描画用に導出していたフック位置・静置・たるみはすべて実物理から得られる。
-import { rhs2, totalEnergy2 } from './crane-model2.js';
+import { rhs2, totalEnergy2, klossForce } from './crane-model2.js';
 import { makeRK4 } from './integrator.js';
-import { GEOM, CRANE, PHYS, NOTCH } from './params.js';
+import { GEOM, CRANE, PHYS, NOTCH, PROFILES } from './params.js';
 
 // ワイヤロープ実効軸剛性 [N]: JIS G 3525 6×Fi(29) φ12 の金属断面積 ≈ 70 mm²,
 // E ≈ 100 GPa → EA ≈ 7.0e6 N。2 本掛け(掛数2)のフック剛性 k = n·EA/L。
@@ -25,8 +25,21 @@ export class CraneSimulator {
     this.aux = { T: 0, Tc: 0, N: 0, NHook: 0, dist: 0, stretch: 0, legT: [0, 0, 0, 0], FdrvX: 0, FdrvY: 0, ropeHx: 0, ropeHy: 0 };
     this.loadMass = opts.loadMass ?? 1000;
     this.cgOff = { x: 0, y: 0 };   // 吊荷の偏心重心(幾何中心→重心)。課題・設定で使用
+    this.profileName = opts.profile ?? 'inverter';
     this.reset();
   }
+
+  // 機体プロファイル切替(inverter / exam)。運転状態は初期化しない
+  setProfile(name) {
+    if (!PROFILES[name]) return;
+    this.profileName = name;
+    this.ctc = { x: { dir: 0, step: 0, t: 0 }, y: { dir: 0, step: 0, t: 0 } };
+    this.hoistBrake = { state: 'set', t: 0 };
+    this.vh = 0;
+    this._syncParams();
+  }
+
+  get prof() { return PROFILES[this.profileName]; }
 
   reset() {
     this.time = 0;
@@ -43,6 +56,11 @@ export class CraneSimulator {
     this.notches = { travel: 0, traverse: 0, hoist: 0 };
     this.controlMode = 'pendant';   // 'pendant' | 'lever'(運転室)
     this.vcmdX = 0; this.vcmdY = 0;
+    // 試験場仕様機: コンタクタ段(限時順次投入)と巻上ブレーキ・ウインチ速度
+    this.ctc = { x: { dir: 0, step: 0, t: 0 }, y: { dir: 0, step: 0, t: 0 } };
+    this.hoistBrake = { state: 'set', t: 0 };  // set|releasing|released|setting
+    this.vh = 0;                                // 巻上速度(上+)[m/s](exam 動的ウインチ)
+    this.overload = false;
     this.loadStatic = { x: 6, y: 4, yaw: 0 };  // 置かれている吊荷(幾何中心)
     const s = this.s;
     s.fill(0);
@@ -98,6 +116,67 @@ export class CraneSimulator {
       CdALoad: PHYS.dragCdA, CdAHook: 0.15,
       cLin: 0.6, cLinHook: 0.2,
     };
+    // 試験場仕様機: 走行・横行はクロスのトルク-すべり駆動(コンタクタ段に追従)
+    const pr = this.prof;
+    if (pr.type === 'kloss') {
+      const mk = (axis, c) => ({
+        vSync: c.step > 0 ? c.dir * pr[axis].vSync : 0,
+        sm: pr.sm[Math.max(0, c.step - 1)],
+        Fb: pr.kTb * pr[axis].Fn,
+      });
+      this.p.klossX = mk('travel', this.ctc.x);
+      this.p.klossY = mk('traverse', this.ctc.y);
+    } else {
+      this.p.klossX = null;
+      this.p.klossY = null;
+    }
+  }
+
+  // 試験場仕様機の巻上ウインチ: 電磁ブレーキ+動的ウインチ(クロス駆動 vs 張力)。
+  // レバー 0 = 無通電 → ブレーキ閉までのトルクフリー窓で荷にずり下がりが生じる
+  _hoistExam(dirH, stepH, h) {
+    const pr = this.prof;
+    const br = this.hoistBrake;
+    const want = dirH !== 0 && stepH > 0;
+    const T = this.aux.T;
+    const mW = 3000;   // 反映ウインチ慣性(等価質量)[kg]
+    switch (br.state) {
+      case 'set':
+        this.vh = 0;
+        if (want) { br.state = 'releasing'; br.t = 0; }
+        break;
+      case 'releasing':
+        this.vh = 0; br.t += h;
+        if (br.t >= 0.18) br.state = 'released';
+        break;
+      case 'released': {
+        if (want) {
+          const drv = { vSync: dirH * pr.hoist.vSync, sm: pr.sm[stepH - 1], Fb: pr.kTb * pr.hoist.Fn };
+          this.vh += (klossForce(drv, this.vh) - T) / mW * h;
+        } else { br.state = 'setting'; br.t = 0; }
+        break;
+      }
+      case 'setting':
+        // 無通電・ブレーキ閉までのトルクフリー窓: 張力に引かれてずり下がる
+        br.t += h;
+        this.vh += (-T) / mW * h;
+        if (want) { br.state = 'releasing'; br.t = 0; }
+        else if (br.t >= pr.brakeSet) { br.state = 'set'; this.vh = 0; }
+        break;
+    }
+    this.vh = clamp(this.vh, -1.3 * pr.hoist.vSync, 1.3 * pr.hoist.vSync);
+    this.dL = -this.vh;
+  }
+
+  // コンタクタ限時順次投入: 上げ段は stepTime 間隔で 1 段ずつ、下げ段・切は即時。
+  // 方向反転(逆ノッチ=プラッギング)は 1 段目から再投入
+  _ctcUpdate(c, dir, step, h) {
+    if (dir === 0 || step === 0) { c.dir = 0; c.step = 0; c.t = 0; return; }
+    if (dir !== c.dir) { c.dir = dir; c.step = 1; c.t = 0; return; }
+    if (step > c.step) {
+      c.t += h;
+      if (c.step === 0 || c.t >= this.prof.stepTime) { c.step++; c.t = 0; }
+    } else if (step < c.step) { c.step = step; c.t = 0; }
   }
 
   // 状態を直接書き換えた後に補助量(張力・接地反力)を再評価する
@@ -213,36 +292,81 @@ export class CraneSimulator {
   _substep(h) {
     const s = this.s;
 
-    // --- 指令速度の決定(ペンダント 2 段速 / 運転室ノッチ多段速) ---
+    // --- 過負荷防止装置(過負荷防止装置構造規格): 実測荷重(ロードセル=ロープ
+    // 張力)が定格の 1.05 倍を超えたら巻上(上)を自動停止・警報。定格未満で復帰 ---
+    const pr = this.prof;
+    const measured = this.aux.T / PHYS.g;   // フック込み実測 [kg]
+    const ratedGross = pr.ratedLoad + CRANE.mHook;
+    if (measured > ratedGross * 1.05) this.overload = true;
+    else if (measured < ratedGross) this.overload = false;
+
+    // --- 指令の取り出し(方向・段) ---
     const es = this.estopActive;
-    // インバータホイストの軽負荷高速: 吊上げ質量(実張力から判定)が定格の 50% 未満
-    const suspended = this.aux.T / PHYS.g;
-    const hoistVmax = (suspended < CRANE.ratedLoad * 0.5) ? CRANE.hoistSpeedLight : CRANE.hoistSpeed[1];
-    let tgtX, tgtY, tgtL;
+    let dirX, stepX, dirY, stepY, dirH, stepH;
     if (this.controlMode === 'lever') {
-      const fr = (n) => Math.sign(n) * NOTCH.fractions[Math.abs(n)];
-      tgtX = es ? 0 : fr(this.notches.travel) * CRANE.travelSpeed[1];
-      tgtY = es ? 0 : fr(this.notches.traverse) * CRANE.traverseSpeed[1];
-      const nh = this.notches.hoist;
-      const hoistTop = Math.abs(nh) === NOTCH.count ? hoistVmax : CRANE.hoistSpeed[1];
-      tgtL = es ? 0 : -Math.sign(nh) * NOTCH.fractions[Math.abs(nh)] * hoistTop;
+      dirX = Math.sign(this.notches.travel); stepX = Math.abs(this.notches.travel);
+      dirY = Math.sign(this.notches.traverse); stepY = Math.abs(this.notches.traverse);
+      dirH = Math.sign(this.notches.hoist); stepH = Math.abs(this.notches.hoist);
     } else {
-      tgtX = es ? 0 : this.cmd.travel * CRANE.travelSpeed[this.cmd.step - 1];
-      tgtY = es ? 0 : this.cmd.traverse * CRANE.traverseSpeed[this.cmd.step - 1];
-      const hoistSpd = this.cmd.step === 2 ? hoistVmax : CRANE.hoistSpeed[0];
-      tgtL = es ? 0 : -this.cmd.hoist * hoistSpd;
+      dirX = this.cmd.travel; stepX = dirX ? (this.cmd.step === 2 ? 5 : 2) : 0;
+      dirY = this.cmd.traverse; stepY = dirY ? (this.cmd.step === 2 ? 5 : 2) : 0;
+      dirH = this.cmd.hoist; stepH = dirH ? (this.cmd.step === 2 ? 5 : 2) : 0;
     }
+    if (es) { dirX = dirY = dirH = 0; stepX = stepY = stepH = 0; }
+    if (this.overload && dirH > 0) { dirH = 0; stepH = 0; }   // 巻上のみ停止(巻下は可)
 
-    // --- 台形加減速ランプ ---
-    const aX = CRANE.travelSpeed[1] / CRANE.travelRamp * (es ? 2.5 : 1);
-    const aY = CRANE.traverseSpeed[1] / CRANE.traverseRamp * (es ? 2.5 : 1);
-    this.vcmdX = clamp(tgtX, this.vcmdX - aX * h, this.vcmdX + aX * h);
-    this.vcmdY = clamp(tgtY, this.vcmdY - aY * h, this.vcmdY + aY * h);
+    if (pr.type === 'kloss') {
+      // --- 試験場仕様機: コンタクタ限時順次投入+トルク-すべり駆動 ---
+      this._ctcUpdate(this.ctc.x, dirX, stepX, h);
+      this._ctcUpdate(this.ctc.y, dirY, stepY, h);
+      this._hoistExam(dirH, stepH, h);
+      this.vcmdX = 0; this.vcmdY = 0;
+    } else {
+      // --- インバータ機: 速度サーボ+台形ランプ ---
+      // 軽負荷高速: 吊上げ質量(実張力から判定)が定格の 50% 未満なら最上段が増速
+      const hoistVmax = (measured < CRANE.ratedLoad * 0.5) ? CRANE.hoistSpeedLight : CRANE.hoistSpeed[1];
+      let tgtX, tgtY, tgtL;
+      if (this.controlMode === 'lever') {
+        const fr = (n, d) => d * NOTCH.fractions[n];
+        tgtX = fr(stepX, dirX) * CRANE.travelSpeed[1];
+        tgtY = fr(stepY, dirY) * CRANE.traverseSpeed[1];
+        const hoistTop = stepH === NOTCH.count ? hoistVmax : CRANE.hoistSpeed[1];
+        tgtL = -dirH * NOTCH.fractions[stepH] * hoistTop;
+      } else {
+        tgtX = dirX * CRANE.travelSpeed[stepX === 5 ? 1 : 0];
+        tgtY = dirY * CRANE.traverseSpeed[stepY === 5 ? 1 : 0];
+        tgtL = -dirH * (stepH === 5 ? hoistVmax : CRANE.hoistSpeed[0]);
+      }
+      const aX = CRANE.travelSpeed[1] / CRANE.travelRamp * (es ? 2.5 : 1);
+      const aY = CRANE.traverseSpeed[1] / CRANE.traverseRamp * (es ? 2.5 : 1);
+      this.vcmdX = clamp(tgtX, this.vcmdX - aX * h, this.vcmdX + aX * h);
+      this.vcmdY = clamp(tgtY, this.vcmdY - aY * h, this.vcmdY + aY * h);
 
-    // --- ウインチ(巻上 = L 減少)。逆駆動不能・速度制御 ---
-    const aL = CRANE.hoistSpeed[1] / CRANE.hoistRamp * (es ? 3 : 1);
-    this.dL = clamp(tgtL, this.dL - aL * h, this.dL + aL * h);
-    if ((this.L <= CRANE.ropeMin && this.dL < 0) || (this.L >= CRANE.ropeMax && this.dL > 0)) this.dL = 0;
+      // ウインチ: ブレーキシーケンス(FREQOL 系: トルク確立→開放、停止時 DC 保持→閉)
+      const br = this.hoistBrake;
+      const wantHoist = tgtL !== 0;
+      const aL = CRANE.hoistSpeed[1] / CRANE.hoistRamp * (es ? 3 : 1);
+      switch (br.state) {
+        case 'set':
+          this.dL = 0;
+          if (wantHoist) { br.state = 'releasing'; br.t = 0; }
+          break;
+        case 'releasing':
+          this.dL = 0; br.t += h;
+          if (br.t >= 0.35) br.state = 'released';
+          break;
+        case 'released':
+          this.dL = clamp(tgtL, this.dL - aL * h, this.dL + aL * h);
+          if (!wantHoist && Math.abs(this.dL) < 0.005) { br.state = 'setting'; br.t = 0; }
+          break;
+        case 'setting':
+          this.dL = 0; br.t += h;   // 停止トルク保持(ずり下がりなし)→ ブレーキ閉
+          if (wantHoist) { br.state = 'releasing'; br.t = 0; }
+          else if (br.t >= 0.15) br.state = 'set';
+          break;
+      }
+    }
+    if ((this.L <= CRANE.ropeMin && this.dL < 0) || (this.L >= CRANE.ropeMax && this.dL > 0)) { this.dL = 0; this.vh = 0; }
 
     // --- 突風(オルンシュタイン=ウーレンベック過程) ---
     if (this.windMean > 0) {
@@ -259,6 +383,9 @@ export class CraneSimulator {
       L0: this.L, dL: this.dL, t0: this.time,
       windX: this.windMean * 0.94 + this.gust.x,
       windY: this.windMean * 0.34 + this.gust.y,
+      // 試験場仕様機の非常停止: 走行・横行に非常ブレーキ(通常停止は惰行が実機どおり)
+      brakeX: (es && pr.type === 'kloss') ? 5000 : 0,
+      brakeY: (es && pr.type === 'kloss') ? 2000 : 0,
     };
     const p = this.p;
     this.rk4((t, st, out) => rhs2(t, st, u, p, out), this.time, s, h);
@@ -286,6 +413,12 @@ export class CraneSimulator {
       const vh = Math.hypot(s[7], s[8]);
       const Fh = Math.hypot(this.aux.ropeHx, this.aux.ropeHy);
       if (vh < 0.02 && Fh < 1.22 * p.mu * this.aux.NHook) { s[7] = 0; s[8] = 0; }
+    }
+
+    // 非常停止ブレーキの微速域スナップ(クーロン制動のチャタリング防止)
+    if (es && pr.type === 'kloss') {
+      if (Math.abs(s[1]) < 0.02) s[1] = 0;
+      if (Math.abs(s[3]) < 0.02) s[3] = 0;
     }
 
     // --- 非常停止の復帰: 全軸停止かつ全操作が中立(ゼロノッチインターロック) ---
@@ -347,8 +480,8 @@ export class CraneSimulator {
       warnings.push({ level: 'danger', text: '荷が傾いています(偏心) — 重心の真上に掛け直してください' });
     if (tilt.angle > Math.atan(PHYS.muGround * 0.4))
       warnings.push({ level: 'danger', text: '荷ずれの危険! スリングが滑ります' });
-    if (this.attached && this.aux.T > (CRANE.ratedLoad + CRANE.mHook) * PHYS.g * 1.1)
-      warnings.push({ level: 'danger', text: '過負荷! 定格荷重を超えています' });
+    if (this.overload)
+      warnings.push({ level: 'danger', text: '過負荷防止装置 作動 — 巻上停止(荷を減らしてください)' });
 
     return {
       X: s[0], Y: s[2],
@@ -365,6 +498,12 @@ export class CraneSimulator {
       T: this.aux.T,
       Tc: this.aux.Tc,
       legT: this.aux.legT.slice(),
+      loadMeter: this.aux.T / PHYS.g,          // 荷重計(ロードセル実測)[kg]
+      overload: this.overload,
+      profile: this.profileName,
+      ratedLoad: this.prof.ratedLoad,
+      hoistBrake: this.hoistBrake.state,
+      contactor: { x: this.ctc.x.step, y: this.ctc.y.step },
       loadMass: this.attached ? this.attachedLoadMass : this.loadMass,
       sway: { angle: swayAngle, amp: horiz },
       speeds: { travel: s[1], traverse: s[3], hoist: -this.dL, loadVz: this.attached ? s[15] : s[9] },

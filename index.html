@@ -31,6 +31,7 @@
       <div class="hud-item"><span class="hud-label">横行速度</span><span class="hud-value" id="hud-traverse-speed">0.00 m/s</span></div>
       <div class="hud-item"><span class="hud-label">巻上速度</span><span class="hud-value" id="hud-hoist-speed">0.00 m/s</span></div>
       <div class="hud-item"><span class="hud-label">ワイヤ張力</span><span class="hud-value" id="hud-tension">0.0 kN</span></div>
+      <div class="hud-item"><span class="hud-label">荷重計</span><span class="hud-value" id="hud-loadmeter">0.00 t</span></div>
       <div class="hud-item"><span class="hud-label">吊荷質量</span><span class="hud-value" id="hud-load-mass">— kg</span></div>
       <div class="hud-item"><span class="hud-label">運転時間</span><span class="hud-value" id="hud-time">0:00</span></div>
     </div>
@@ -111,8 +112,15 @@
   <!-- 設定パネル -->
   <div id="settings-panel" class="panel hidden">
     <div class="hud-title">設定</div>
+    <label class="set-row"><span>機体プロファイル</span>
+      <select id="set-profile">
+        <option value="inverter">2.8t インバータ機(標準)</option>
+        <option value="exam">5t 試験場仕様機(二次抵抗制御)</option>
+      </select></label>
     <label class="set-row"><span>吊荷質量 <span id="set-mass-val">1000</span> kg</span>
-      <input type="range" id="set-mass" min="100" max="2800" step="100" value="1000"></label>
+      <input type="range" id="set-mass" min="100" max="3500" step="100" value="1000"></label>
+    <label class="set-row"><span>重心の偏り <span id="set-cg-val">0.00</span> m(次回玉掛けから)</span>
+      <input type="range" id="set-cg" min="-0.3" max="0.3" step="0.05" value="0"></label>
     <label class="set-row"><span>風外乱 <span id="set-wind-val">0.0</span> m/s</span>
       <input type="range" id="set-wind" min="0" max="8" step="0.5" value="0"></label>
     <label class="set-row set-check"><input type="checkbox" id="set-trails"> 吊荷の軌跡を表示</label>

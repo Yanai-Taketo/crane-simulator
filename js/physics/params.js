@@ -77,6 +77,33 @@ export const CAB = {
   eyeYOff: -0.15, // 目線の前窓寄りオフセット(北向き −y)[m]
 };
 
+// 機体プロファイル
+// - inverter: 現行 2.8t インバータ機(速度サーボ)
+// - exam: 5t 試験場仕様機(巻線形二次抵抗制御 = クロスのトルク-すべり曲線、
+//   速度無調整・負荷で速度が変わる・コンタクタ限時順次投入)。
+//   諸元は近畿安全衛生技術センター試験クレーン(JEED 論文 図6)と
+//   比例推移パラメータ(docs/RESEARCH-v2.md TASK2)に基づく:
+//   走行 100 / 横行 40 / 巻上 15 m/min、s_m = [6.42, 2.89, 1.30, 0.583, 0.262]
+export const PROFILES = {
+  inverter: {
+    label: '2.8t インバータ機(標準)',
+    type: 'inverter',
+    ratedLoad: 2800,
+  },
+  exam: {
+    label: '5t 試験場仕様機(二次抵抗制御)',
+    type: 'kloss',
+    ratedLoad: 5000,
+    sm: [6.42, 2.89, 1.30, 0.583, 0.262],  // ノッチ別すべり(比例推移)
+    kTb: 2.3,                               // 停動トルク比 Tb/Tn
+    stepTime: 0.7,                          // コンタクタ限時投入間隔 [s]
+    travel:   { vSync: 1.681, Fn: 6160 },   // N5 で 100 m/min・N1 で 79% 相当
+    traverse: { vSync: 0.672, Fn: 2200 },
+    hoist:    { vSync: 0.277, Fn: 20000 },  // 巻上 15 m/min@定格・荷で速度低下
+    brakeSet: 0.12,                         // 電磁ブレーキ閉遅れ(トルクフリー窓)[s]
+  },
+};
+
 export const PHYS = {
   g: 9.80665,
   dt: 1 / 720,          // 物理刻み [s](60fps 描画で 12 サブステップ)
