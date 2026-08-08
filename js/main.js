@@ -256,6 +256,7 @@ $('set-wind').addEventListener('input', (e) => {
   sim.setWind(v);
 });
 $('set-trails').addEventListener('change', (e) => scene.setTrailVisible(e.target.checked));
+$('set-shadows').addEventListener('change', (e) => scene.setShadows(e.target.checked));
 $('set-profile').addEventListener('change', (e) => {
   if (guardExamSetting(() => { e.target.value = sim.profileName; })) return;
   sim.setProfile(e.target.value);

@@ -58,6 +58,8 @@ export class SceneManager {
     this._tmpQ2 = new THREE.Quaternion();
     this._UP = new THREE.Vector3(0, 1, 0);
     this._hookSmooth = null;   // フック描画位置の平滑化(1フレーム跳びの吸収)
+    this._ropePerp = { x: 1, z: 0 };   // ロープ弧の張り出し方向(フレーム間連続)
+    this._sagSmooth = 0;               // ロープたるみ量の表示平滑値
 
     // 運転席視点のマウスルック(ヨー・ピッチ)
     this.cabYaw = 0;          // 0 = 北向き(ガーダ沿い・反対側ランウェイ方向)
@@ -96,7 +98,14 @@ export class SceneManager {
     sun.shadow.camera.top = 24; sun.shadow.camera.bottom = -24;
     sun.shadow.camera.near = 2; sun.shadow.camera.far = 60;
     sun.shadow.bias = -0.0005;
+    sun.shadow.normalBias = 0.02;   // 実 GPU の深度精度差によるアクネ防止
     this.scene.add(sun, sun.target);
+    this.sun = sun;
+  }
+
+  // 影の描画切替(GPU 負荷軽減・描画不具合の切り分け用)
+  setShadows(on) {
+    this.sun.castShadow = on;
   }
 
   _buildFactory() {
@@ -530,7 +539,7 @@ export class SceneManager {
     this.trailPos = new Float32Array(this.trailMax * 3);
     this.trailGeo.setAttribute('position', new THREE.BufferAttribute(this.trailPos, 3));
     this.trailGeo.setDrawRange(0, 0);
-    this.trail = new THREE.Line(this.trailGeo, new THREE.LineBasicMaterial({ color: 0x58c4ff, transparent: true, opacity: 0.65 }));
+    this.trail = new THREE.Line(this.trailGeo, new THREE.LineBasicMaterial({ color: 0x58c4ff, transparent: true, opacity: 0.65, depthWrite: false }));
     this.trail.frustumCulled = false;
     this.trail.visible = false;
     this.scene.add(this.trail);
@@ -547,14 +556,14 @@ export class SceneManager {
     const g = new THREE.Group();
     const ring = new THREE.Mesh(
       new THREE.RingGeometry(r - 0.12, r, 48),
-      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85, side: THREE.DoubleSide })
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85, side: THREE.DoubleSide, depthWrite: false })
     );
     ring.rotation.x = -Math.PI / 2;
     ring.position.y = 0.02;
     g.add(ring);
     const disc = new THREE.Mesh(
       new THREE.CircleGeometry(r - 0.12, 48),
-      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.12, side: THREE.DoubleSide })
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.12, side: THREE.DoubleSide, depthWrite: false })
     );
     disc.rotation.x = -Math.PI / 2;
     disc.position.y = 0.015;
@@ -577,8 +586,8 @@ export class SceneManager {
     const poleMat = new THREE.MeshStandardMaterial({ color: 0xe8c33a, roughness: 0.6 });
     const baseMat = new THREE.MeshStandardMaterial({ color: 0x333940, roughness: 0.8 });
     const barMat = new THREE.MeshStandardMaterial({ color: 0xd84a3a, roughness: 0.6 });
-    const wallMat = new THREE.MeshStandardMaterial({ color: 0x8fa3b8, roughness: 0.9, transparent: true, opacity: 0.55, side: THREE.DoubleSide });
-    const fenceMat = new THREE.MeshStandardMaterial({ color: 0xb9a13c, roughness: 0.75, transparent: true, opacity: 0.8, side: THREE.DoubleSide });
+    const wallMat = new THREE.MeshStandardMaterial({ color: 0x8fa3b8, roughness: 0.9, transparent: true, opacity: 0.55, side: THREE.DoubleSide, depthWrite: false });
+    const fenceMat = new THREE.MeshStandardMaterial({ color: 0xb9a13c, roughness: 0.75, transparent: true, opacity: 0.8, side: THREE.DoubleSide, depthWrite: false });
     for (const ob of course.obstacles) {
       if (ob.type === 'pole') {
         const h = ob.zHi - ob.zLo;
@@ -669,6 +678,28 @@ export class SceneManager {
 
     // ワイヤロープ描画(2本掛け)。たるみは余剰長から求めた物理たるみ量
     // rs.ropeSag を弦と直交する水平方向に膨らませて表現(2 本は左右へ開く)
+    // 弦の水平法線は 2 本で共有し、前フレームとの連続性で符号を選ぶ。
+    // (グローバルな符号正規化だと、弦方向が軸をまたぐ瞬間に弧が 180° 反転して
+    //  1 フレームで大きく飛ぶチラつきになる — 実測 122 cm/フレーム)
+    {
+      let px = this._hookSmooth.z - rs.Y, pz = -(this._hookSmooth.x - rs.X);
+      const pl = Math.hypot(px, pz);
+      // 真上(水平成分 < 5 cm)では方向が定義できずノイズになるため前の向きを保持
+      if (pl > 0.05) {
+        px /= pl; pz /= pl;
+        if (px * this._ropePerp.x + pz * this._ropePerp.z < 0) { px = -px; pz = -pz; }
+        // 真上通過時は弦方向が高速回転するため、向きの変化も短時定数で平滑化
+        // (弛んだロープの弧が 1 フレームで大きく振り回されるのを防ぐ)
+        const f = 1 - Math.exp(-dtRender / 0.15);
+        const nx = this._ropePerp.x + (px - this._ropePerp.x) * f;
+        const nz = this._ropePerp.z + (pz - this._ropePerp.z) * f;
+        const nl = Math.hypot(nx, nz);
+        if (nl > 1e-6) { this._ropePerp.x = nx / nl; this._ropePerp.z = nz / nl; }
+      }
+    }
+    // たるみ量は表示側で短時定数の平滑化(弛み判定の境界で √ 特性により
+    // 1 フレームで十数 cm 立ち上がる段差ポップを滑らかな遷移にする)
+    this._sagSmooth += ((rs.ropeSag || 0) - this._sagSmooth) * (1 - Math.exp(-dtRender / 0.12));
     const pivotY = GEOM.pivotH;
     let k = 0;
     for (const off of [-0.16, 0.16]) {
@@ -676,15 +707,10 @@ export class SceneManager {
       const bx = this.hookBlock.position.x + off * 0.6,
             by = this.hookBlock.position.y + 0.25,
             bz = this.hookBlock.position.z;
-      // 弦に直交する水平単位ベクトル(弦が鉛直に近い場合は x 方向)
       const cx = bx - ax, cy = by - ay, cz = bz - az;
-      let pxn = cz, pzn = -cx;                    // (c × ŷ) の水平成分
-      const pl = Math.hypot(pxn, pzn);
-      if (pl > 1e-6) { pxn /= pl; pzn /= pl; } else { pxn = 1; pzn = 0; }
-      // 弦の微小な向きの違いで 2 本が同方向へ倒れないよう向きを一意化
-      if (pxn < -1e-9 || (Math.abs(pxn) <= 1e-9 && pzn < 0)) { pxn = -pxn; pzn = -pzn; }
+      const pxn = this._ropePerp.x, pzn = this._ropePerp.z;
       const side = off < 0 ? -1 : 1;
-      const sag = rs.ropeSag || 0;
+      const sag = this._sagSmooth;
       const segs = 8;
       for (let i = 0; i < segs; i++) {
         for (const t of [i / segs, (i + 1) / segs]) {

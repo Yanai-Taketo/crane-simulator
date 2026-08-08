@@ -168,7 +168,7 @@ export class CraneAudio {
     let alarmGain = 0, alarmFreq = 2000;
     if (rs.overload) { alarmGain = 0.14; }
     else if (frac >= 0.9) { alarmGain = (this._alarmPhase % 1.0) < 0.5 ? 0.11 : 0; }
-    else if (rs.ropeLen <= CRANE.ropeMin + 0.05) { alarmFreq = 1500; alarmGain = (this._alarmPhase % 0.6) < 0.3 ? 0.08 : 0; }
+    else if (rs.overwind) { alarmFreq = 1500; alarmGain = (this._alarmPhase % 0.6) < 0.3 ? 0.08 : 0; }   // HUD 表示とヒステリシスを共有
     this.alarmOsc.frequency.setTargetAtTime(alarmFreq, t, 0.02);
     this.alarm.gain.setTargetAtTime(alarmGain, t, 0.02);
 

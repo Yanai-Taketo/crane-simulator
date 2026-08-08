@@ -62,6 +62,11 @@ export class CraneSimulator {
     this.vh = 0;                                // 巻上速度(上+)[m/s](exam 動的ウインチ)
     this.overload = false;
     this.loadShape = null;                     // null = 直方体 / {r,h} = 円柱(ドラム缶)
+    // 警告のシュミット・ヒステリシス状態とデバウンス(表示チラつき防止)
+    this._warnHy = { oblique: false, overwind: false, swayBig: false, tilt: false, slip: false };
+    this._warnDb = {};
+    this._swayEnvW = 0;   // 振れ振幅包絡(_substep で平滑更新)
+    this._loadMeterF = 0; // 荷重計の指示値 [kg](ロードセルの減衰を模擬・τ=0.3 s)
     this.loadStatic = { x: 6, y: 4, yaw: 0 };  // 置かれている吊荷(幾何中心)
     const s = this.s;
     s.fill(0);
@@ -237,6 +242,15 @@ export class CraneSimulator {
     this._syncParams();
   }
 
+  // 警告の時間デバウンス: raw が onDelay 続いたら表示、offDelay 続いたら消灯。
+  // チェーン張力のようなインパルス的な量による 1 フレーム幽霊警告を防ぐ
+  _warnStable(name, raw, onDelay = 0.2, offDelay = 0.5) {
+    const st = this._warnDb[name] ?? (this._warnDb[name] = { shown: false, state: false, since: -1e9 });
+    if (raw !== st.state) { st.state = raw; st.since = this.time; }
+    if (raw !== st.shown && this.time - st.since >= (raw ? onDelay : offDelay)) st.shown = raw;
+    return st.shown;
+  }
+
   placeLoad(x, y) {
     if (this.attached) return;
     this.loadStatic = { x, y, yaw: 0 };
@@ -303,8 +317,9 @@ export class CraneSimulator {
 
     // --- 過負荷防止装置(過負荷防止装置構造規格): 実測荷重(ロードセル=ロープ
     // 張力)が定格の 1.05 倍を超えたら巻上(上)を自動停止・警報。定格未満で復帰 ---
+    // 判定は減衰付き荷重計値(実機のロードセル指示)— スナップ過渡ではバタつかない
     const pr = this.prof;
-    const measured = this.aux.T / PHYS.g;   // フック込み実測 [kg]
+    const measured = this._loadMeterF;
     const ratedGross = pr.ratedLoad + CRANE.mHook;
     if (measured > ratedGross * 1.05) this.overload = true;
     else if (measured < ratedGross) this.overload = false;
@@ -430,6 +445,21 @@ export class CraneSimulator {
       if (Math.abs(s[3]) < 0.02) s[3] = 0;
     }
 
+    // 荷振れの振幅包絡(警告用): 位相空間振幅 √(変位² + (相対速度/ω)²) を
+    // τ=0.3 s で平滑化。ロープ弾性の高周波振動は潰し、振り子成分は通す
+    {
+      const bx2 = this.attached ? s[10] : s[4], by2 = this.attached ? s[11] : s[5];
+      const bz2 = this.attached ? s[12] : s[6];
+      const horiz2 = Math.hypot(bx2 - s[0], by2 - s[2]);
+      const vrx = (this.attached ? s[13] : s[7]) - s[1];
+      const vry = (this.attached ? s[14] : s[8]) - s[3];
+      const om = Math.sqrt(PHYS.g / Math.max(0.5, GEOM.pivotH - bz2));
+      const envRaw = Math.hypot(horiz2, Math.hypot(vrx, vry) / om);
+      const a = 1 - Math.exp(-h / 0.3);
+      this._swayEnvW += (envRaw - this._swayEnvW) * a;
+      this._loadMeterF += (this.aux.T / PHYS.g - this._loadMeterF) * a;
+    }
+
     // --- 非常停止の復帰: 全軸停止かつ全操作が中立(ゼロノッチインターロック) ---
     if (es && Math.abs(s[1]) < 0.005 && Math.abs(s[3]) < 0.005 &&
         Math.abs(this.dL) < 0.002 && this.vcmdX === 0 && this.vcmdY === 0 &&
@@ -479,17 +509,35 @@ export class CraneSimulator {
     const swayAngle = Math.atan2(horiz, Math.max(0.2, pivotH - bz));
     const grounded = this.aux.N > 0;
 
+    // 警告判定: 生のしきい値比較は振れの半周期ごと・張力のインパルスごとに
+    // 出没して表示がチラつくため、シュミット・ヒステリシス+時間デバウンスで安定化。
+    // 荷振れは瞬時変位が周期的に 0 を通るので、位相空間の振幅包絡
+    // √(変位² + (相対速度/ω)²) で判定する(振れている間は連続して大きい)
+    const hy = this._warnHy, deg = Math.PI / 180;
+    hy.oblique = this.attached && grounded && (hy.oblique
+      ? (this.aux.Tc > 25 && swayAngle > 2.5 * deg)
+      : (this.aux.Tc > 50 && swayAngle > 4 * deg));
+    hy.overwind = this.L <= CRANE.ropeMin + (hy.overwind ? 0.10 : 0.05);
+    hy.swayBig = this.attached && !grounded && this._swayEnvW > (hy.swayBig ? 0.65 : 0.8);
+    hy.tilt = tilt.angle > (hy.tilt ? 2 : 3) * deg;
+    const slipOn = Math.atan(PHYS.muGround * 0.4);
+    hy.slip = tilt.angle > (hy.slip ? 0.75 * slipOn : slipOn);
+
     const warnings = [];
-    if (this.estopActive) warnings.push({ level: 'danger', text: '非常停止 作動中' });
-    if (this.attached && grounded && this.aux.Tc > 50 && swayAngle > 4 * Math.PI / 180)
+    if (this.estopActive) warnings.push({ level: 'danger', text: '非常停止 作動中' });   // 復帰条件で既にラッチ済み
+    if (this._warnStable('oblique', hy.oblique))
       warnings.push({ level: 'danger', text: '斜め吊り(横引き)! 真上に吊点を合わせてください' });
-    if (this.L <= CRANE.ropeMin + 0.05) warnings.push({ level: 'info', text: '過巻注意(上限リミット)' });
-    if (this.attached && !grounded && horiz > 0.8) warnings.push({ level: 'info', text: '荷振れ大 — 追いノッチで制振を' });
-    if (tilt.angle > 3 * Math.PI / 180)
+    if (this._warnStable('overwind', hy.overwind))
+      warnings.push({ level: 'info', text: '過巻注意(上限リミット)' });
+    if (this._warnStable('swayBig', hy.swayBig))
+      warnings.push({ level: 'info', text: '荷振れ大 — 追いノッチで制振を' });
+    if (this._warnStable('tilt', hy.tilt))
       warnings.push({ level: 'danger', text: '荷が傾いています(偏心) — 重心の真上に掛け直してください' });
-    if (tilt.angle > Math.atan(PHYS.muGround * 0.4))
+    if (this._warnStable('slip', hy.slip))
       warnings.push({ level: 'danger', text: '荷ずれの危険! スリングが滑ります' });
-    if (this.overload)
+    // 装置の遮断動作は生のまま。表示のみ作動即時・解除後 0.5 s 保持
+    // (動的張力が 1.05×/1.00× バンドを往復した時のチップ明滅を防ぐ)
+    if (this._warnStable('overload', this.overload, 0, 0.5))
       warnings.push({ level: 'danger', text: '過負荷防止装置 作動 — 巻上停止(荷を減らしてください)' });
 
     return {
@@ -507,7 +555,7 @@ export class CraneSimulator {
       T: this.aux.T,
       Tc: this.aux.Tc,
       legT: this.aux.legT.slice(),
-      loadMeter: this.aux.T / PHYS.g,          // 荷重計(ロードセル実測)[kg]
+      loadMeter: this._loadMeterF,             // 荷重計(ロードセル・減衰付き指示値)[kg]
       overload: this.overload,
       profile: this.profileName,
       ratedLoad: this.prof.ratedLoad,
@@ -515,6 +563,9 @@ export class CraneSimulator {
       contactor: { x: this.ctc.x.step, y: this.ctc.y.step },
       loadMass: this.attached ? this.attachedLoadMass : this.loadMass,
       sway: { angle: swayAngle, amp: horiz },
+      // 採点・音響用の生フラグ(表示用デバウンス前。採点は遅延なしで正確に)
+      obliqueRaw: hy.oblique,
+      overwind: hy.overwind,
       speeds: { travel: s[1], traverse: s[3], hoist: -this.dL, loadVz: this.attached ? s[15] : s[9] },
       controlMode: this.controlMode,
       notches: { travel: this.notches.travel, traverse: this.notches.traverse, hoist: this.notches.hoist },

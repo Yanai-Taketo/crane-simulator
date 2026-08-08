@@ -12,7 +12,9 @@ export class Hud {
       loadMass: $('hud-load-mass'), time: $('hud-time'),
       warnings: $('hud-warnings'),
     };
-    this._lastWarnKey = '';
+    this._warnHold = new Map();   // text → { level, until }
+    this._warnEls = new Map();    // text → DOM ノード(点滅アニメの位相を保つ)
+    this._lastSimTime = 0;
   }
 
   update(rs, simTime) {
@@ -31,15 +33,26 @@ export class Hud {
     const m = Math.floor(simTime / 60), s = Math.floor(simTime % 60);
     e.time.textContent = `${m}:${String(s).padStart(2, '0')}`;
 
-    const key = rs.warnings.map(w => w.text).join('|');
-    if (key !== this._lastWarnKey) {
-      this._lastWarnKey = key;
-      e.warnings.innerHTML = '';
-      for (const w of rs.warnings) {
+    // 警告チップ: チャタリング防止のため表示側でも 1.2 s 保持し、
+    // 既存ノードは再利用する(全消し+再構築だと点滅アニメが毎回リスタートする)
+    if (simTime < this._lastSimTime) {          // リセットで時計が巻き戻ったら全消去
+      this._warnHold.clear();
+      for (const el of this._warnEls.values()) el.remove();
+      this._warnEls.clear();
+    }
+    this._lastSimTime = simTime;
+    for (const w of rs.warnings) this._warnHold.set(w.text, { level: w.level, until: simTime + 1.2 });
+    for (const [text, h] of this._warnHold) {
+      if (h.until <= simTime) {
+        this._warnHold.delete(text);
+        this._warnEls.get(text)?.remove();
+        this._warnEls.delete(text);
+      } else if (!this._warnEls.has(text)) {
         const div = document.createElement('div');
-        div.className = w.level === 'danger' ? 'warn' : 'warn warn-info';
-        div.textContent = w.text;
+        div.className = h.level === 'danger' ? 'warn' : 'warn warn-info';
+        div.textContent = text;
         e.warnings.appendChild(div);
+        this._warnEls.set(text, div);
       }
     }
   }

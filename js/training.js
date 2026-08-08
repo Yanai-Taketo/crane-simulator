@@ -70,7 +70,8 @@ export class TrainingTask {
     } else if (this.state === 'transport') {
       this.time += dt;
       this.maxSway = Math.max(this.maxSway, rs.sway.amp);
-      if (rs.warnings.some(w => w.text.includes('斜め'))) this.obliqueTime += dt;
+      // 表示用デバウンス前の生フラグで計時(採点は遅延・幽霊なしで正確に)
+      if (rs.obliqueRaw) this.obliqueTime += dt;
       // 着床の瞬間の降下速度(据え付けの丁寧さ)
       if (!this._prevOnGround && rs.loadOnGround) {
         this.impactSpeed = Math.max(this.impactSpeed, Math.abs(rs.speeds.loadVz ?? 0));

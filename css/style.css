@@ -43,7 +43,8 @@ body {
 .hud-item { display: flex; flex-direction: column; padding: 3px 0; border-bottom: 1px solid rgba(120,150,180,0.12); }
 .hud-label { font-size: 10px; color: var(--text-dim); }
 .hud-value { font-size: 15px; font-variant-numeric: tabular-nums; font-weight: 600; }
-#hud-warnings { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+/* 1 行ぶんの高さを確保し、警告の出没でパネルの高さが跳ねないように */
+#hud-warnings { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; min-height: 25px; contain: layout; }
 .warn {
   font-size: 11px; font-weight: 700; padding: 4px 8px; border-radius: 6px;
   background: rgba(255, 82, 82, 0.16); color: var(--danger); border: 1px solid rgba(255,82,82,0.4);

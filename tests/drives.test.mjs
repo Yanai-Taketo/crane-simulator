@@ -26,7 +26,8 @@ function rigAttached(sim, L = 4) {
 test('過負荷防止装置: 定格 1.05 倍超で巻上のみ自動停止・巻下は可・警報表示', () => {
   const sim = new CraneSimulator({ loadMass: 3300 });   // 定格 2800 超
   rigAttached(sim, 4);
-  for (let i = 0; i < 30; i++) sim.step(1 / 60);
+  // 荷重計はロードセル減衰付き(τ=0.3 s)なので指示値の収束を待つ
+  for (let i = 0; i < 90; i++) sim.step(1 / 60);
   assert.ok(sim.overload, '過負荷ラッチ');
   const L0 = sim.L;
   sim.setLevers({ hoist: 5 });   // 巻上指令
